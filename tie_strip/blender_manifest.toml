@@ -1,0 +1,23 @@
+schema_version = "1.0.0"
+
+id = "tie_strip"
+version = "0.2.0"
+name = "Tie Strip Generator"
+tagline = "3D-printable model railroad tie strips with spike holes"
+maintainer = "John <john@singerlinks.com>"
+type = "add-on"
+
+blender_version_min = "4.5.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
+tags = ["Add Mesh", "Import-Export"]
+
+[permissions]
+files = "Export tie strips as STL files and save presets"
+
+[build]
+paths_exclude_pattern = [
+  "__pycache__/",
+  "*.pyc",
+  "tests/",
+]
