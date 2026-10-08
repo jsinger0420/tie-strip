@@ -29,15 +29,18 @@ class quiet:
     """Context manager: suppress update callbacks while writing settings."""
 
     def __enter__(self):
+        """Turn updates off, remembering the previous state so blocks can nest."""
         global _quiet
         self._prev, _quiet = _quiet, True
 
     def __exit__(self, *exc):
+        """Put updates back as they were."""
         global _quiet
         _quiet = self._prev
 
 
 def _scale_update(self, context):
+    """Set the gauge to the new scale's standard gauge (custom scales keep theirs)."""
     if _quiet:
         return
     gauge = scales.standard_gauge(self.scale)
@@ -57,28 +60,34 @@ def _units_update(self, context):
 
 
 def _plate_update(self, context):
+    """Mark the chosen plate preset as modified when a plate setting is edited."""
     if not _quiet and self.plate_preset:
         self.plate_modified = True
 
 
 def _strip_update(self, context):
+    """Mark the chosen strip preset as modified when any setting is edited."""
     if not _quiet and self.strip_preset:
         self.strip_modified = True
 
 
 def _proto(name, default, desc, update=None, soft_max=1000.0):
+    """A prototype length property, in the units chosen by ``proto_units``."""
     return FloatProperty(name=name, description=desc + " (prototype size, in the chosen units)",
                          default=default, min=0.0, soft_max=soft_max, precision=3,
                          update=update or _strip_update)
 
 
 def _model(name, default, desc, update=None):
+    """A model-millimetre length property."""
     return FloatProperty(name=name, description=desc + " (model millimetres)",
                          default=default, min=0.0, soft_max=50.0, precision=3, step=1,
                          update=update or _strip_update)
 
 
 class TIESTRIP_Settings(bpy.types.PropertyGroup):
+    """Every Tie Strip setting, stored on the scene as ``scene.tie_strip``."""
+
     # ---- scale and track (model mm) ----
     scale: EnumProperty(
         name="Scale", default="HO", update=_scale_update,
@@ -194,6 +203,7 @@ class TIESTRIP_Settings(bpy.types.PropertyGroup):
     # ------------------------------------------------------------------
 
     def scale_n(self) -> float:
+        """N in 1:N for the chosen scale."""
         return scales.scale_n(self.scale, self.scale_custom)
 
     def full_mm(self, key: str) -> float:
@@ -208,11 +218,22 @@ class TIESTRIP_Settings(bpy.types.PropertyGroup):
         return self.tie_count
 
     def tie_size(self):
-        """The board preset's (length, width, thickness) in full-size mm, its units, error."""
+        """The tie size from the board preset, as wb_bridge.board_size returns it.
+
+        Returns ((length, width, thickness) in full-size mm, the preset's
+        units "IN" or "MM", error text or "").
+        """
         from .wb_bridge import board_size
         return board_size(self.board_preset)
 
     def to_spec(self, count: bool = True, **overrides) -> Spec:
+        """The settings as a layout Spec, prototype lengths in full-size mm.
+
+        With ``count=False`` the tie count is taken as entered, even in Max
+        Length mode (``ties`` uses this to avoid recursing). ``overrides`` set
+        Spec fields the settings don't hold, such as values measured from
+        the built boards.
+        """
         f = self.full_mm
         (tl, tw, th), _units, tie_error = self.tie_size()
         spec = Spec(
@@ -249,6 +270,10 @@ class TIESTRIP_Settings(bpy.types.PropertyGroup):
         return out
 
     def apply_plate_values(self, values: dict, name: str) -> None:
+        """Load a plate preset's values (lengths in inches) and select it as ``name``.
+
+        Keys the preset lacks are left as they are.
+        """
         with quiet():
             for key in PLATE_KEYS:
                 if key not in values:
@@ -269,6 +294,11 @@ class TIESTRIP_Settings(bpy.types.PropertyGroup):
                 for p in self.bl_rna.properties if p.identifier not in skip}
 
     def apply_strip_values(self, values: dict, name: str) -> None:
+        """Load a strip preset's values and select it as ``name``.
+
+        Units are set first so saved lengths aren't converted. Unknown keys
+        and values this version rejects are skipped, so older presets load.
+        """
         names = {p.identifier for p in self.bl_rna.properties}
         with quiet():
             if "proto_units" in values:
@@ -285,8 +315,10 @@ class TIESTRIP_Settings(bpy.types.PropertyGroup):
 
 
 def register():
+    """Add ``scene.tie_strip``. TIESTRIP_Settings must already be registered."""
     bpy.types.Scene.tie_strip = bpy.props.PointerProperty(type=TIESTRIP_Settings)
 
 
 def unregister():
+    """Remove ``scene.tie_strip``."""
     del bpy.types.Scene.tie_strip

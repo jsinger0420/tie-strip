@@ -11,6 +11,7 @@ from .preset_store import PresetError
 
 
 def _settings(context):
+    """The scene's Tie Strip settings."""
     return context.scene.tie_strip
 
 
@@ -23,6 +24,7 @@ def is_busy() -> bool:
 
 
 def _redraw(context):
+    """Ask every area on the screen to redraw, so the panel shows the busy state."""
     screen = context.screen
     if screen:
         for area in screen.areas:
@@ -39,6 +41,7 @@ class TIESTRIP_OT_generate(bpy.types.Operator):
     _timer = None
 
     def _run(self, context, progress=None):
+        """Build the strip and report errors, warnings and the summary line."""
         try:
             result = build.generate(context, progress)
         except (build.BuildError, wb_bridge.BridgeError) as err:
@@ -52,7 +55,7 @@ class TIESTRIP_OT_generate(bpy.types.Operator):
         return {"FINISHED"}
 
     def execute(self, context):
-        # Scripts and the redo panel: build straight away.
+        """Build straight away, with no wait message (scripts and the redo panel)."""
         return self._run(context)
 
     def invoke(self, context, event):
@@ -75,6 +78,7 @@ class TIESTRIP_OT_generate(bpy.types.Operator):
         return {"RUNNING_MODAL"}
 
     def modal(self, context, event):
+        """On the first timer tick, build with a progress bar, then restore the cursor."""
         global _busy
         if event.type != "TIMER":
             return {"RUNNING_MODAL"}  # ignore clicks and keys until the build is done
@@ -100,6 +104,7 @@ class TIESTRIP_OT_new_seed(bpy.types.Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
+        """Set a random seed."""
         import random
         _settings(context).seed = random.randrange(1, 2**31 - 1)
         return {"FINISHED"}
@@ -115,15 +120,18 @@ class TIESTRIP_OT_export_stl(bpy.types.Operator, ExportHelper):
 
     @classmethod
     def poll(cls, context):
+        """Only available once a strip has been generated."""
         return bpy.data.objects.get(build.RESULT_NAME) is not None
 
     def invoke(self, context, event):
+        """Open the file browser on the default file name, next to the .blend file."""
         folder = os.path.dirname(bpy.data.filepath) if bpy.data.filepath else os.path.expanduser("~")
         self.filepath = os.path.join(folder, build.file_name(_settings(context)))
         context.window_manager.fileselect_add(self)
         return {"RUNNING_MODAL"}
 
     def execute(self, context):
+        """Write the strip to the chosen file."""
         obj = bpy.data.objects.get(build.RESULT_NAME)
         try:
             build.export_stl(context, obj, self.filepath)
@@ -143,6 +151,7 @@ class TIESTRIP_OT_set_board_preset(bpy.types.Operator):
     name: StringProperty()
 
     def execute(self, context):
+        """Store the chosen preset name in the settings."""
         _settings(context).board_preset = self.name
         return {"FINISHED"}
 
@@ -159,10 +168,12 @@ class TIESTRIP_OT_apply_plate_preset(bpy.types.Operator):
 
     @classmethod
     def description(cls, context, properties):
+        """Tooltip: the built-in preset's description, or a generic one for a saved preset."""
         preset = plates.get_builtin(properties.name)
         return preset.description if preset else f"Apply your saved plate preset '{properties.name}'"
 
     def execute(self, context):
+        """Load the built-in or saved preset's values into the settings."""
         preset = plates.get_builtin(self.name)
         try:
             values = dict(preset.values) if preset else preset_store.load(preset_store.PLATE, self.name)
@@ -181,11 +192,13 @@ class TIESTRIP_OT_save_plate_preset(bpy.types.Operator):
     name: StringProperty(name="Name", description="Saving under an existing name replaces it")
 
     def invoke(self, context, event):
+        """Ask for a name, suggesting the current saved preset (not a built-in one)."""
         current = _settings(context).plate_preset
         self.name = "" if plates.is_builtin(current) else current
         return context.window_manager.invoke_props_dialog(self)
 
     def execute(self, context):
+        """Save the plate settings under the name, refusing built-in names."""
         name = preset_store.clean_name(self.name)
         if not name:
             self.report({"ERROR"}, "Give the preset a name.")
@@ -213,10 +226,12 @@ class TIESTRIP_OT_remove_plate_preset(bpy.types.Operator):
     name: StringProperty()
 
     def invoke(self, context, event):
+        """Ask before deleting."""
         return context.window_manager.invoke_confirm(
             self, event, title=f"Delete plate preset '{self.name}'?", confirm_text="Delete")
 
     def execute(self, context):
+        """Delete the preset file, and clear the panel's preset name if it was this one."""
         try:
             preset_store.remove(preset_store.PLATE, self.name)
         except (PresetError, OSError) as err:
@@ -239,6 +254,7 @@ class TIESTRIP_OT_apply_strip_preset(bpy.types.Operator):
     name: StringProperty()
 
     def execute(self, context):
+        """Load the saved preset's values into the settings."""
         try:
             values = preset_store.load(preset_store.STRIP, self.name)
         except PresetError as err:
@@ -256,10 +272,12 @@ class TIESTRIP_OT_save_strip_preset(bpy.types.Operator):
     name: StringProperty(name="Name", description="Saving under an existing name replaces it")
 
     def invoke(self, context, event):
+        """Ask for a name, suggesting the current strip preset."""
         self.name = _settings(context).strip_preset
         return context.window_manager.invoke_props_dialog(self)
 
     def execute(self, context):
+        """Save every setting under the name."""
         name = preset_store.clean_name(self.name)
         if not name:
             self.report({"ERROR"}, "Give the preset a name.")
@@ -284,10 +302,12 @@ class TIESTRIP_OT_remove_strip_preset(bpy.types.Operator):
     name: StringProperty()
 
     def invoke(self, context, event):
+        """Ask before deleting."""
         return context.window_manager.invoke_confirm(
             self, event, title=f"Delete strip preset '{self.name}'?", confirm_text="Delete")
 
     def execute(self, context):
+        """Delete the preset file, and clear the panel's preset name if it was this one."""
         try:
             preset_store.remove(preset_store.STRIP, self.name)
         except (PresetError, OSError) as err:

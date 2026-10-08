@@ -39,6 +39,7 @@ class Box:
 
     @property
     def size(self) -> tuple[float, float, float]:
+        """(length along X, width along Y, height along Z)."""
         return (self.x1 - self.x0, self.y1 - self.y0, self.z1 - self.z0)
 
 
@@ -122,6 +123,7 @@ class Layout:
 
     @property
     def ok(self) -> bool:
+        """True when there are no errors and the strip can be built."""
         return not self.errors
 
 

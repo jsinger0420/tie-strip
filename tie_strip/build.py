@@ -35,6 +35,8 @@ class BuildError(RuntimeError):
 
 @dataclass
 class BuildResult:
+    """The built strip object, warnings to show, and build statistics for the report."""
+
     obj: bpy.types.Object
     warnings: list[str] = field(default_factory=list)
     info: dict = field(default_factory=dict)
@@ -49,6 +51,7 @@ def set_scene_millimetres(scene) -> None:
 
 
 def _collection(scene) -> bpy.types.Collection:
+    """The Tie Strip collection, created and linked to the scene if needed."""
     coll = bpy.data.collections.get(COLLECTION)
     if coll is None:
         coll = bpy.data.collections.new(COLLECTION)
@@ -58,6 +61,7 @@ def _collection(scene) -> bpy.types.Collection:
 
 
 def _clear_collection(coll) -> None:
+    """Delete every object in ``coll``, and its mesh when nothing else uses it."""
     for obj in list(coll.objects):
         mesh = obj.data if obj.type == "MESH" else None
         bpy.data.objects.remove(obj)
@@ -66,6 +70,7 @@ def _clear_collection(coll) -> None:
 
 
 def _new_object(name, verts, tris, coll) -> bpy.types.Object:
+    """A new mesh object from vertex and triangle arrays, linked to ``coll``."""
     obj = bpy.data.objects.new(name, wb_bridge.mesh_from_arrays(name, verts, tris))
     coll.objects.link(obj)
     return obj

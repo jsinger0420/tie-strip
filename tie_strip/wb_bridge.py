@@ -52,7 +52,7 @@ def find_api():
 
 
 def available() -> str:
-    """"" if Weathered Board can be used, otherwise why not."""
+    """An empty string if Weathered Board can be used, otherwise the reason it can't."""
     try:
         find_api()
     except BridgeError as err:
@@ -96,6 +96,7 @@ CACHE_LIMIT = 400
 
 
 def clear_cache() -> None:
+    """Forget every cached board."""
     _cache.clear()
 
 

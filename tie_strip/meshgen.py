@@ -25,6 +25,7 @@ _BOX_TRIS = np.array([
 
 
 def empty() -> tuple[np.ndarray, np.ndarray]:
+    """A mesh with no vertices or triangles."""
     return np.zeros((0, 3)), np.zeros((0, 3), dtype=np.int32)
 
 

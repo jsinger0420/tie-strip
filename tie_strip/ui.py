@@ -6,20 +6,25 @@ from . import layout, operators, plates, preset_store, wb_bridge
 
 
 def _s(context):
+    """The scene's Tie Strip settings."""
     return context.scene.tie_strip
 
 
 def _u(s):
+    """Short label for the prototype units, for property labels: "in" or "mm"."""
     return "in" if s.proto_units == "IN" else "mm"
 
 
 # ---- menus ----
 
 class TIESTRIP_MT_board_presets(bpy.types.Menu):
+    """Choose the Weathered Board preset that sets the ties' look and size"""
+
     bl_label = "Weathered Board Presets"
     bl_idname = "TIESTRIP_MT_board_presets"
 
     def draw(self, context):
+        """One item per Weathered Board preset, or why there are none."""
         names = wb_bridge.preset_names()
         if not names:
             self.layout.label(text=wb_bridge.available() or "No presets found", icon="ERROR")
@@ -28,10 +33,13 @@ class TIESTRIP_MT_board_presets(bpy.types.Menu):
 
 
 class TIESTRIP_MT_plate_presets(bpy.types.Menu):
+    """Built-in tie plate presets by era, then your saved ones"""
+
     bl_label = "Tie Plate Presets"
     bl_idname = "TIESTRIP_MT_plate_presets"
 
     def draw(self, context):
+        """Built-in presets, then saved presets each with a delete button."""
         col = self.layout
         for p in plates.BUILTIN_PLATES:
             col.operator("tie_strip.apply_plate_preset", text=p.name).name = p.name
@@ -45,10 +53,13 @@ class TIESTRIP_MT_plate_presets(bpy.types.Menu):
 
 
 class TIESTRIP_MT_strip_presets(bpy.types.Menu):
+    """Your saved strip presets"""
+
     bl_label = "Strip Presets"
     bl_idname = "TIESTRIP_MT_strip_presets"
 
     def draw(self, context):
+        """Saved strip presets, each with a delete button."""
         saved = preset_store.saved_names(preset_store.STRIP)
         if not saved:
             self.layout.label(text="No strip presets saved yet")
@@ -59,6 +70,7 @@ class TIESTRIP_MT_strip_presets(bpy.types.Menu):
 
 
 def _preset_row(layout, menu, label, current, modified, save_op):
+    """A preset menu showing the current preset (marked if modified), plus a save button."""
     row = layout.row(align=True)
     text = (current or label) + (" (modified)" if current and modified else "")
     row.menu(menu, text=text)
@@ -68,15 +80,20 @@ def _preset_row(layout, menu, label, current, modified, save_op):
 # ---- panels ----
 
 class _Panel:
+    """Shared placement: the Tie Strip tab in the 3D Viewport sidebar."""
+
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = "Tie Strip"
 
 
 class TIESTRIP_PT_main(_Panel, bpy.types.Panel):
+    """Generate and export the tie strip, and check its printed size"""
+
     bl_label = "Tie Strip"
 
     def draw(self, context):
+        """Presets, Generate and Export, then a live summary or the layout errors."""
         s = _s(context)
         col = self.layout.column()
         _preset_row(col, "TIESTRIP_MT_strip_presets", "Strip Presets", s.strip_preset,
@@ -117,10 +134,13 @@ class TIESTRIP_PT_main(_Panel, bpy.types.Panel):
 
 
 class TIESTRIP_PT_track(_Panel, bpy.types.Panel):
+    """Model scale, gauge and the rail measurements"""
+
     bl_label = "Scale and Track"
     bl_parent_id = "TIESTRIP_PT_main"
 
     def draw(self, context):
+        """Scale (and custom ratio), then gauge and rail sizes in mm."""
         s = _s(context)
         col = self.layout.column()
         col.prop(s, "scale")
@@ -142,10 +162,13 @@ def _inches(v_mm: float) -> str:
 
 
 class TIESTRIP_PT_ties(_Panel, bpy.types.Panel):
+    """Tie preset, spacing, how many ties, printer and seed"""
+
     bl_label = "Ties"
     bl_parent_id = "TIESTRIP_PT_main"
 
     def draw(self, context):
+        """Tie preset and its sizes, spacing, count or max length, printer and seed."""
         s, u = _s(context), _u(_s(context))
         col = self.layout.column()
         col.label(text="Tie preset (from Weathered Board):")
@@ -188,10 +211,13 @@ class TIESTRIP_PT_ties(_Panel, bpy.types.Panel):
 
 
 class TIESTRIP_PT_strip(_Panel, bpy.types.Panel):
+    """Straight or flexible strip, the connectors and rail seats"""
+
     bl_label = "Strip"
     bl_parent_id = "TIESTRIP_PT_main"
 
     def draw(self, context):
+        """Strip type, first connector side for flex, connector size, rail seats."""
         s = _s(context)
         col = self.layout.column()
         col.prop(s, "strip_type", expand=True)
@@ -203,11 +229,14 @@ class TIESTRIP_PT_strip(_Panel, bpy.types.Panel):
 
 
 class TIESTRIP_PT_build(_Panel, bpy.types.Panel):
+    """Mesh detail and board reuse, trading build time for variety"""
+
     bl_label = "Build Options"
     bl_parent_id = "TIESTRIP_PT_main"
     bl_options = {"DEFAULT_CLOSED"}
 
     def draw(self, context):
+        """Triangle limit and pool settings; Pool Size only matters for long strips."""
         s = _s(context)
         col = self.layout.column()
         col.prop(s, "max_triangles")
@@ -218,11 +247,14 @@ class TIESTRIP_PT_build(_Panel, bpy.types.Panel):
 
 
 class TIESTRIP_PT_variation(_Panel, bpy.types.Panel):
+    """Random differences in tie length, position and angle"""
+
     bl_label = "Variation"
     bl_parent_id = "TIESTRIP_PT_main"
     bl_options = {"DEFAULT_CLOSED"}
 
     def draw(self, context):
+        """Length, end offset and angle variation, and random turning."""
         s, u = _s(context), _u(_s(context))
         col = self.layout.column()
         col.prop(s, "length_jitter", text=f"Length +/- ({u})")
@@ -232,10 +264,13 @@ class TIESTRIP_PT_variation(_Panel, bpy.types.Panel):
 
 
 class TIESTRIP_PT_holes(_Panel, bpy.types.Panel):
+    """Size and placement of the spike holes"""
+
     bl_label = "Spike Holes"
     bl_parent_id = "TIESTRIP_PT_main"
 
     def draw(self, context):
+        """Hole diameter, clearance from the rail foot and stagger."""
         s, u = _s(context), _u(_s(context))
         col = self.layout.column()
         col.prop(s, "hole_diameter", text="Diameter (mm)")
@@ -247,13 +282,17 @@ class TIESTRIP_PT_holes(_Panel, bpy.types.Panel):
 
 
 class TIESTRIP_PT_plates(_Panel, bpy.types.Panel):
+    """Tie plates and shoulders under the rails"""
+
     bl_label = "Tie Plates"
     bl_parent_id = "TIESTRIP_PT_main"
 
     def draw_header(self, context):
+        """The on/off checkbox in the panel header."""
         self.layout.prop(_s(context), "plates_on", text="")
 
     def draw(self, context):
+        """Plate presets, then plate and shoulder sizes (greyed out when plates are off)."""
         s, u = _s(context), _u(_s(context))
         col = self.layout.column()
         _preset_row(col, "TIESTRIP_MT_plate_presets", "Plate Presets", s.plate_preset,

@@ -47,6 +47,7 @@ def clean_name(name: str) -> str:
 
 
 def _path(kind: str, name: str) -> str:
+    """The JSON file for a preset name."""
     return os.path.join(folder(kind), clean_name(name) + ".json")
 
 
@@ -79,7 +80,7 @@ def save(kind: str, name: str, values: dict) -> str:
 
 
 def load(kind: str, name: str) -> dict:
-    """A saved preset's values."""
+    """A saved preset's values (name matched ignoring case)."""
     stored = _stored_name(kind, name)
     if stored is None:
         raise PresetError(f"No saved preset named '{name}'.")
@@ -94,6 +95,7 @@ def load(kind: str, name: str) -> dict:
 
 
 def remove(kind: str, name: str) -> None:
+    """Delete a saved preset (name matched ignoring case)."""
     stored = _stored_name(kind, name)
     if stored is None:
         raise PresetError(f"No saved preset named '{name}'.")

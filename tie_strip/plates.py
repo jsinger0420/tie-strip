@@ -22,12 +22,15 @@ PLATE_KEYS = ("plates_on", "shoulders") + PLATE_LENGTH_KEYS
 
 @dataclass(frozen=True)
 class PlatePreset:
+    """A built-in tie plate preset: menu name, tooltip, and the setting values."""
+
     name: str
     description: str
     values: Mapping[str, Any]  # lengths in inches
 
 
 def _plate(on, length, width, thick, bias, shoulders, sh=0.5, sw=0.75):
+    """A preset's values dict from positional sizes in inches (keys as in PLATE_KEYS)."""
     return {"plates_on": on, "plate_length": length, "plate_width": width,
             "plate_thickness": thick, "plate_bias": bias, "shoulders": shoulders,
             "shoulder_height": sh, "shoulder_width": sw}
@@ -57,6 +60,7 @@ BUILTIN_PLATES: tuple[PlatePreset, ...] = (
 
 
 def get_builtin(name: str) -> PlatePreset | None:
+    """The built-in preset with exactly this name, or None (e.g. for a saved preset)."""
     for p in BUILTIN_PLATES:
         if p.name == name:
             return p
@@ -64,4 +68,5 @@ def get_builtin(name: str) -> PlatePreset | None:
 
 
 def is_builtin(name: str) -> bool:
+    """True if ``name`` matches a built-in preset, ignoring case, so saves can't shadow one."""
     return name.casefold() in {p.name.casefold() for p in BUILTIN_PLATES}

@@ -7,6 +7,7 @@ from .layout import DEFAULT_THRESHOLDS
 
 
 def _t(printer, key, label, desc):
+    """A threshold property, defaulting to the value in layout.DEFAULT_THRESHOLDS."""
     return FloatProperty(name=label + " (mm)", description=desc + ", in model millimetres",
                          min=0.0, soft_max=2.0,
                          precision=3, default=DEFAULT_THRESHOLDS[printer][key])
@@ -36,10 +37,12 @@ class TIESTRIP_Preferences(bpy.types.AddonPreferences):
     fdm_shoulder: _t("FDM", "shoulder", "Smallest Shoulder", "Smallest plate shoulder on FDM")
 
     def thresholds(self, printer: str) -> dict:
+        """This printer's thresholds, keyed like layout.DEFAULT_THRESHOLDS."""
         p = "resin" if printer == "RESIN" else "fdm"
         return {k: getattr(self, f"{p}_{k}") for k in ("hole", "plate", "connector", "gap", "shoulder")}
 
     def draw(self, context):
+        """The grain limit, then resin and FDM thresholds side by side."""
         layout = self.layout
         layout.prop(self, "grain_limit")
         row = layout.row()
