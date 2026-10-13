@@ -3,10 +3,10 @@
 import os
 
 import bpy
-from bpy.props import StringProperty
+from bpy.props import BoolProperty, StringProperty
 from bpy_extras.io_utils import ExportHelper
 
-from . import build, plates, preset_store, wb_bridge
+from . import build, plates, preset_store, rail_bridge, wb_bridge
 from .preset_store import PresetError
 
 
@@ -32,7 +32,7 @@ def _redraw(context):
 
 
 class TIESTRIP_OT_generate(bpy.types.Operator):
-    """Build the tie strip from these settings, replacing the previous one"""
+    """Add a new tie strip at the 3D cursor from these settings, with a random seed unless Lock Seed is on. Strips made earlier are kept"""
 
     bl_idname = "tie_strip.generate"
     bl_label = "Generate Tie Strip"
@@ -111,17 +111,23 @@ class TIESTRIP_OT_new_seed(bpy.types.Operator):
 
 
 class TIESTRIP_OT_export_stl(bpy.types.Operator, ExportHelper):
-    """Export the generated tie strip as an STL file in millimetres, ready for a slicer"""
+    """Export the selected tie strips as STL files in millimetres, ready for a slicer"""
 
     bl_idname = "tie_strip.export_stl"
     bl_label = "Export STL"
     filename_ext = ".stl"
     filter_glob: StringProperty(default="*.stl", options={"HIDDEN"})
+    one_file_per_strip: BoolProperty(
+        name="One File per Strip",
+        description="Write each selected strip to its own file, named after the file name "
+                    "chosen plus the strip's name",
+        default=False,
+    )
 
     @classmethod
     def poll(cls, context):
-        """Only available once a strip has been generated."""
-        return bpy.data.objects.get(build.RESULT_NAME) is not None
+        """Only available when at least one selected object is a tie strip."""
+        return bool(build.selected_strips(context))
 
     def invoke(self, context, event):
         """Open the file browser on the default file name, next to the .blend file."""
@@ -131,14 +137,28 @@ class TIESTRIP_OT_export_stl(bpy.types.Operator, ExportHelper):
         return {"RUNNING_MODAL"}
 
     def execute(self, context):
-        """Write the strip to the chosen file."""
-        obj = bpy.data.objects.get(build.RESULT_NAME)
+        """Write the selected strips to the chosen file, or each to its own file.
+
+        Only tie strips are exported, even if other objects are selected too.
+        With ``one_file_per_strip`` each file is the chosen name plus
+        ``_<strip name>``, with characters a file name can't hold replaced by ``_``.
+        """
+        strips = build.selected_strips(context)
         try:
-            build.export_stl(context, obj, self.filepath)
+            if not self.one_file_per_strip:
+                build.export_stl(context, strips, self.filepath)
+                self.report({"INFO"}, f"Exported {len(strips)} strip(s) to "
+                                      f"{os.path.basename(self.filepath)}")
+                return {"FINISHED"}
+            stem, ext = os.path.splitext(self.filepath)
+            for obj in strips:
+                safe = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in obj.name)
+                build.export_stl(context, [obj], f"{stem}_{safe}{ext}")
         except RuntimeError as err:
             self.report({"ERROR"}, f"Export failed: {err}")
             return {"CANCELLED"}
-        self.report({"INFO"}, f"Exported {os.path.basename(self.filepath)}")
+        self.report({"INFO"}, f"Exported {len(strips)} files next to "
+                              f"{os.path.basename(self.filepath)}")
         return {"FINISHED"}
 
 
@@ -153,6 +173,39 @@ class TIESTRIP_OT_set_board_preset(bpy.types.Operator):
     def execute(self, context):
         """Store the chosen preset name in the settings."""
         _settings(context).board_preset = self.name
+        return {"FINISHED"}
+
+
+class TIESTRIP_OT_set_rail_preset(bpy.types.Operator):
+    """Fill the rail sizes from this Model Rail Generator preset"""
+
+    bl_idname = "tie_strip.set_rail_preset"
+    bl_label = "Rail Preset"
+    bl_options = {"REGISTER", "UNDO", "INTERNAL"}
+    name: StringProperty()
+
+    @classmethod
+    def description(cls, context, properties):
+        """Tooltip: Custom, a built-in preset or a measured one."""
+        if not properties.name:
+            return "Type the rail sizes yourself, measured on your rail"
+        if rail_bridge.is_builtin(properties.name):
+            return ("Typical sizes for this rail code; for printed spikes a preset measured "
+                    "on your own rail is better")
+        return f"Your saved rail '{properties.name}'"
+
+    def execute(self, context):
+        """Copy the preset's sizes into the settings (or switch to Custom)."""
+        s = _settings(context)
+        if not self.name:
+            s.apply_rail_values({}, "")
+            return {"FINISHED"}
+        try:
+            values = rail_bridge.preset_values(self.name)
+        except (KeyError, AttributeError) as err:
+            self.report({"ERROR"}, f"Can't read rail preset '{self.name}': {err}")
+            return {"CANCELLED"}
+        s.apply_rail_values(values, self.name)
         return {"FINISHED"}
 
 
@@ -321,7 +374,7 @@ class TIESTRIP_OT_remove_strip_preset(bpy.types.Operator):
 
 classes = (
     TIESTRIP_OT_generate, TIESTRIP_OT_new_seed, TIESTRIP_OT_export_stl,
-    TIESTRIP_OT_set_board_preset,
+    TIESTRIP_OT_set_board_preset, TIESTRIP_OT_set_rail_preset,
     TIESTRIP_OT_apply_plate_preset, TIESTRIP_OT_save_plate_preset, TIESTRIP_OT_remove_plate_preset,
     TIESTRIP_OT_apply_strip_preset, TIESTRIP_OT_save_strip_preset, TIESTRIP_OT_remove_strip_preset,
 )

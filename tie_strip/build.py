@@ -6,14 +6,22 @@
 3. Re-run the layout with the boards' real grain depth, which sets the
    connector overlap and the rail seat fill.
 4. Place the ties (turned, offset, angled) and make the connectors,
-   rail seat pads, tie plates, shoulders and hole cutters.
+   rail seat pads, tie plates, shoulders, and either hole cutters or
+   printed spikes.
 5. Join everything with Boolean modifiers (Manifold solver, falling back
-   to Exact), then cut the spike holes.
+   to Exact), then cut any spike holes.
 6. Clean up and check the result is watertight.
+7. Place the new strip at the 3D cursor and select it.
+
+Like Weathered Board's Add button, every Generate adds a new strip to the
+active collection and leaves earlier strips alone, and uses a new random
+seed unless Lock Seed is on. The seed used is written back to the panel,
+so locking it repeats the last strip.
 """
 
 from __future__ import annotations
 
+import json
 import random
 import time
 from dataclasses import dataclass, field
@@ -24,8 +32,9 @@ import numpy as np
 
 from . import layout, meshgen, prefs, wb_bridge
 
-COLLECTION = "Tie Strip"
-RESULT_NAME = "TieStrip"
+RESULT_NAME = "TieStrip"  # new strips are named this; Blender adds .001, .002...
+TAG = "tie_strip"  # custom property marking an object as a generated strip
+SETTINGS_KEY = "tie_strip_settings"  # the settings the strip was built with, as JSON
 SEED_LIMIT = 2**31
 
 
@@ -50,23 +59,14 @@ def set_scene_millimetres(scene) -> None:
     us.scale_length = 0.001
 
 
-def _collection(scene) -> bpy.types.Collection:
-    """The Tie Strip collection, created and linked to the scene if needed."""
-    coll = bpy.data.collections.get(COLLECTION)
-    if coll is None:
-        coll = bpy.data.collections.new(COLLECTION)
-    if coll.name not in scene.collection.children:
-        scene.collection.children.link(coll)
-    return coll
+def is_strip(obj) -> bool:
+    """True when ``obj`` is a tie strip made by Generate."""
+    return obj is not None and obj.type == "MESH" and bool(obj.get(TAG))
 
 
-def _clear_collection(coll) -> None:
-    """Delete every object in ``coll``, and its mesh when nothing else uses it."""
-    for obj in list(coll.objects):
-        mesh = obj.data if obj.type == "MESH" else None
-        bpy.data.objects.remove(obj)
-        if mesh is not None and mesh.users == 0:
-            bpy.data.meshes.remove(mesh)
+def selected_strips(context) -> list:
+    """The selected objects that are tie strips, in selection order."""
+    return [o for o in context.selected_objects if is_strip(o)]
 
 
 def _new_object(name, verts, tris, coll) -> bpy.types.Object:
@@ -131,7 +131,8 @@ def generate(context, progress=None) -> BuildResult:
         raise BuildError("\n".join(lay.errors))
     spec = s.to_spec()
     n = spec.tie_count
-    rng = random.Random(s.seed)
+    seed = s.seed if s.lock_seed else random.randrange(1, SEED_LIMIT)
+    rng = random.Random(seed)
 
     # ---- choose a board for every tie ----
     unique = n <= s.pool_threshold
@@ -142,7 +143,7 @@ def generate(context, progress=None) -> BuildResult:
     for j in range(count):
         boards.append(wb_bridge.get_board(
             api, s.board_preset, lengths[j], spec.tie_width, spec.tie_height,
-            spec.scale_n, s.printer, (s.seed + j) % SEED_LIMIT, s.max_triangles))
+            spec.scale_n, s.printer, (seed + j) % SEED_LIMIT, s.max_triangles))
         if progress:
             progress(j + 1, count + 1)
     if unique:
@@ -180,28 +181,30 @@ def generate(context, progress=None) -> BuildResult:
     parts = [("Connectors", meshgen.boxes(lay.connectors)),
              ("RailSeats", meshgen.boxes(lay.seats)),
              ("TiePlates", meshgen.boxes(lay.plates)),
-             ("Shoulders", meshgen.boxes(lay.shoulders))]
+             ("Shoulders", meshgen.boxes(lay.shoulders)),
+             ("Spikes", meshgen.spikes(lay.spikes))]
     holes = meshgen.cylinders(lay.holes)
 
     set_scene_millimetres(scene)
-    coll = _collection(scene)
-    _clear_collection(coll)
+    coll = context.collection or scene.collection
+    # Everything is built at the origin, so the Boolean operands line up;
+    # the finished strip is moved to the 3D cursor at the end.
     base = _new_object(RESULT_NAME, *ties, coll)
     adds = [_new_object(f"_ts_{name}", *arrays, coll) for name, arrays in parts if len(arrays[0])]
-    cutter = _new_object("_ts_Holes", *holes, coll)
-    for helper in adds + [cutter]:
+    cutters = [_new_object("_ts_Holes", *holes, coll)] if len(holes[0]) else []
+    for helper in adds + cutters:
         helper.hide_render = True
         helper.display_type = "WIRE"
 
     # Manifold needs closed inputs; the boxes and cutters always are.
     solver = "MANIFOLD" if meshgen.open_edges(ties[1]) == 0 else "EXACT"
     try:
-        verts, tris = _boolean(base, adds, [cutter], solver)
+        verts, tris = _boolean(base, adds, cutters, solver)
         if solver == "MANIFOLD" and (len(tris) == 0 or meshgen.open_edges(tris) > 0):
             solver = "EXACT"
-            verts, tris = _boolean(base, adds, [cutter], solver)
+            verts, tris = _boolean(base, adds, cutters, solver)
     finally:
-        for helper in adds + [cutter]:
+        for helper in adds + cutters:
             mesh = helper.data
             bpy.data.objects.remove(helper)
             bpy.data.meshes.remove(mesh)
@@ -227,10 +230,17 @@ def generate(context, progress=None) -> BuildResult:
         "seconds": time.perf_counter() - started, "top_cut": top_cut, "side_cut": side_cut,
         "boards": count,
     }
-    s.last_report = (f"{n} ties, {info['triangles']:,} triangles, {info['seconds']:.1f} s. "
-                     f"Grain: top {top_cut:.2f} mm, sides {side_cut:.2f} mm.")
-    for obj in context.view_layer.objects:
-        obj.select_set(False)
+    if s.seed != seed:
+        from .properties import quiet
+        with quiet():  # record the seed used without marking a strip preset modified
+            s.seed = seed
+    s.last_report = (f"{base.name} (seed {seed}): {n} ties, {info['triangles']:,} triangles, "
+                     f"{info['seconds']:.1f} s. Grain: top {top_cut:.2f} mm, sides {side_cut:.2f} mm.")
+    base[TAG] = True
+    base[SETTINGS_KEY] = json.dumps(s.strip_values(), default=str)
+    base.location = scene.cursor.location.copy()
+    # As in Weathered Board: select the new strip and make it active,
+    # without touching earlier strips or the rest of the selection.
     base.select_set(True)
     context.view_layer.objects.active = base
     return BuildResult(base, warnings, info)
@@ -245,11 +255,20 @@ def file_name(s) -> str:
     return name if name.lower().endswith(".stl") else name + ".stl"
 
 
-def export_stl(context, obj, path: str) -> None:
-    """Write ``obj`` alone to an STL file in millimetres."""
-    for other in context.view_layer.objects:
-        other.select_set(False)
-    obj.select_set(True)
-    context.view_layer.objects.active = obj
-    bpy.ops.wm.stl_export(filepath=path, export_selected_objects=True, global_scale=1.0,
-                          use_scene_unit=False, ascii_format=False, apply_modifiers=True)
+def export_stl(context, objects, path: str) -> None:
+    """Write exactly ``objects`` to one STL file in millimetres, restoring the selection after."""
+    before = list(context.selected_objects)
+    active = context.view_layer.objects.active
+    for o in before:
+        o.select_set(False)
+    for o in objects:
+        o.select_set(True)
+    try:
+        bpy.ops.wm.stl_export(filepath=path, export_selected_objects=True, global_scale=1.0,
+                              use_scene_unit=False, ascii_format=False, apply_modifiers=True)
+    finally:
+        for o in objects:
+            o.select_set(False)
+        for o in before:
+            o.select_set(True)
+        context.view_layer.objects.active = active

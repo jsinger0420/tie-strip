@@ -2,7 +2,7 @@
 
 import bpy
 
-from . import layout, operators, plates, preset_store, wb_bridge
+from . import layout, operators, plates, preset_store, rail_bridge, wb_bridge
 
 
 def _s(context):
@@ -30,6 +30,32 @@ class TIESTRIP_MT_board_presets(bpy.types.Menu):
             self.layout.label(text=wb_bridge.available() or "No presets found", icon="ERROR")
         for name, _desc in names:
             self.layout.operator("tie_strip.set_board_preset", text=name).name = name
+
+
+class TIESTRIP_MT_rail_presets(bpy.types.Menu):
+    """Rail presets from Model Rail Generator, or Custom to type the sizes"""
+
+    bl_label = "Rail Presets"
+    bl_idname = "TIESTRIP_MT_rail_presets"
+
+    def draw(self, context):
+        """Custom, then your saved rail, then the built-in rail codes."""
+        col = self.layout
+        col.operator("tie_strip.set_rail_preset", text="Custom (type the sizes)").name = ""
+        if not rail_bridge.available():
+            col.label(text="Enable Model Rail Generator for rail presets", icon="INFO")
+            return
+        builtin, saved = rail_bridge.preset_names()
+        if saved:
+            col.separator()
+            col.label(text="Your rail (measured)")
+            for name in saved:
+                col.operator("tie_strip.set_rail_preset", text=name).name = name
+        if builtin:
+            col.separator()
+            col.label(text="Built-in (typical sizes)")
+            for name in builtin:
+                col.operator("tie_strip.set_rail_preset", text=name).name = name
 
 
 class TIESTRIP_MT_plate_presets(bpy.types.Menu):
@@ -128,7 +154,14 @@ class TIESTRIP_PT_main(_Panel, bpy.types.Panel):
         box.label(text=f"Printed size {m['overall_length']:.1f} x {m['overall_width']:.1f} x "
                        f"{m['top']:.2f} mm ({len(lay.tie_x)} ties)")
         box.label(text=f"Rail centres at +/-{m['rail_centre']:.2f} mm")
-        box.label(text=f"Outer hole edge at +/-{m['outer_hole']:.2f} mm")
+        if s.fastening == "PRINTED":
+            box.label(text=f"Outer spike edge at +/-{m['outer_hole']:.2f} mm")
+            box.label(text=f"Head underside {m['head_slot']:.2f} mm, top {m['head_top']:.2f} mm "
+                           f"above the rail seat")
+            box.label(text=f"Flat overhang under each head {m['flat_overhang']:.2f} mm")
+            box.label(text=f"Spikes on {m['spiked_ties']:.0f} of {len(lay.tie_x)} ties")
+        else:
+            box.label(text=f"Outer hole edge at +/-{m['outer_hole']:.2f} mm")
         for w in lay.warnings:
             box.label(text=w, icon="ERROR")
 
@@ -146,10 +179,22 @@ class TIESTRIP_PT_track(_Panel, bpy.types.Panel):
         col.prop(s, "scale")
         if s.scale == "CUSTOM":
             col.prop(s, "scale_custom")
-        col.label(text="Measured on your rail (mm):")
         col.prop(s, "gauge", text="Gauge (mm)")
+        col.separator()
+        col.label(text="Rail (from a preset or measured, mm):")
+        text = (s.rail_preset or "Custom") + (" (modified)" if s.rail_preset and s.rail_modified else "")
+        col.menu("TIESTRIP_MT_rail_presets", text=text, icon="IPO_LINEAR")
         col.prop(s, "rail_foot", text="Foot Width (mm)")
         col.prop(s, "rail_head", text="Head Width (mm)")
+        row = col.row()
+        row.alert = s.fastening == "PRINTED" and s.rail_edge <= 0
+        row.prop(s, "rail_edge", text="Foot Edge Thickness (mm)")
+        if s.fastening == "PRINTED" and s.rail_preset and rail_bridge.is_builtin(s.rail_preset):
+            hint = col.column()
+            hint.scale_y = 0.8
+            hint.label(text="Built-in rail sizes are typical, not measured.", icon="INFO")
+            hint.label(text="For printed spikes, measure your rail and")
+            hint.label(text="save it as a preset in Model Rail Generator.")
 
 
 def _inches(v_mm: float) -> str:
@@ -207,6 +252,7 @@ class TIESTRIP_PT_ties(_Panel, bpy.types.Panel):
         col.prop(s, "printer", expand=True)
         row = col.row(align=True)
         row.prop(s, "seed")
+        row.prop(s, "lock_seed", text="", icon="LOCKED" if s.lock_seed else "UNLOCKED")
         row.operator("tie_strip.new_seed", text="", icon="FILE_REFRESH")
 
 
@@ -264,17 +310,33 @@ class TIESTRIP_PT_variation(_Panel, bpy.types.Panel):
 
 
 class TIESTRIP_PT_holes(_Panel, bpy.types.Panel):
-    """Size and placement of the spike holes"""
+    """Spike holes for real spikes, or printed spikes the rail slides in under"""
 
-    bl_label = "Spike Holes"
+    bl_label = "Spikes"
     bl_parent_id = "TIESTRIP_PT_main"
 
     def draw(self, context):
-        """Hole diameter, clearance from the rail foot and stagger."""
+        """Fastening choice, then hole or printed spike sizes, then stagger."""
         s, u = _s(context), _u(_s(context))
         col = self.layout.column()
-        col.prop(s, "hole_diameter", text="Diameter (mm)")
-        col.prop(s, "hole_clearance", text="Clearance from Foot (mm)")
+        col.prop(s, "fastening", expand=True)
+        if s.fastening == "HOLES":
+            col.prop(s, "hole_diameter", text="Diameter (mm)")
+            col.prop(s, "hole_clearance", text="Clearance from Foot (mm)")
+        else:
+            col.prop(s, "spike_shank", text="Shank Width (mm)")
+            col.prop(s, "spike_overhang", text="Head Overhang (mm)")
+            col.prop(s, "spike_head", text="Head Thickness (mm)")
+            col.prop(s, "spike_side_clear", text="Side Clearance (mm)")
+            col.prop(s, "spike_top_clear", text="Top Clearance (mm)")
+            col.prop(s, "spike_chamfer", text="Head Chamfer (degrees)")
+            col.prop(s, "spike_every")
+            col.prop(s, "spike_bare_ends")
+            hint = col.column()
+            hint.scale_y = 0.8
+            hint.label(text="Slide the rail in from a strip end.", icon="INFO")
+            hint.label(text="Keep slicer supports off the top face:")
+            hint.label(text="they would fill the slot under the heads.")
         col.prop(s, "use_stagger")
         sub = col.column()
         sub.enabled = s.use_stagger
@@ -312,7 +374,7 @@ class TIESTRIP_PT_plates(_Panel, bpy.types.Panel):
 
 
 classes = (
-    TIESTRIP_MT_board_presets, TIESTRIP_MT_plate_presets, TIESTRIP_MT_strip_presets,
+    TIESTRIP_MT_board_presets, TIESTRIP_MT_rail_presets, TIESTRIP_MT_plate_presets, TIESTRIP_MT_strip_presets,
     TIESTRIP_PT_main, TIESTRIP_PT_track, TIESTRIP_PT_ties, TIESTRIP_PT_strip,
     TIESTRIP_PT_variation, TIESTRIP_PT_holes, TIESTRIP_PT_plates, TIESTRIP_PT_build,
 )

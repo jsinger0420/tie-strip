@@ -71,6 +71,14 @@ def _strip_update(self, context):
         self.strip_modified = True
 
 
+def _rail_update(self, context):
+    """Mark the chosen rail preset as modified when a rail size is edited by hand."""
+    if not _quiet:
+        if self.rail_preset:
+            self.rail_modified = True
+        _strip_update(self, context)
+
+
 def _proto(name, default, desc, update=None, soft_max=1000.0):
     """A prototype length property, in the units chosen by ``proto_units``."""
     return FloatProperty(name=name, description=desc + " (prototype size, in the chosen units)",
@@ -91,27 +99,42 @@ class TIESTRIP_Settings(bpy.types.PropertyGroup):
     # ---- scale and track (model mm) ----
     scale: EnumProperty(
         name="Scale", default="HO", update=_scale_update,
+        description="Model railroad scale; sets the size ratio and pre-fills the standard gauge",
         items=[(k, v[0], f"1:{v[1]:g}, standard gauge {v[2]:g} mm") for k, v in scales.SCALES.items()]
         + [(scales.CUSTOM, "Custom", "Enter your own ratio")])
     scale_custom: FloatProperty(name="Ratio 1:", default=87.1, min=1.0, soft_max=500.0,
                                 description="N in 1:N for a custom scale", update=_strip_update)
     gauge: _model("Gauge", 16.5, "Distance between the inner faces of the railheads")
-    rail_foot: _model("Rail Foot Width", 0.0, "Width of the rail's base, measured on your rail")
-    rail_head: _model("Rail Head Width", 0.0, "Width of the railhead, measured on your rail")
+    rail_foot: _model("Rail Foot Width", 0.0, "Width of the rail's base, measured on your rail",
+                      _rail_update)
+    rail_head: _model("Rail Head Width", 0.0, "Width of the railhead, measured on your rail",
+                      _rail_update)
+    rail_edge: _model("Foot Edge Thickness", 0.0,
+                      "Thickness of the rail foot at its outer edge; needed for printed spikes",
+                      _rail_update)
+    # From a rail preset only (0 = unknown): used for the printed spike head height and reach.
+    rail_foot_web: FloatProperty(default=0.0, min=0.0, options={"HIDDEN"})
+    rail_web: FloatProperty(default=0.0, min=0.0, options={"HIDDEN"})
+    rail_preset: StringProperty(default="", options={"HIDDEN"})
+    rail_modified: BoolProperty(default=False, options={"HIDDEN"})
 
     # ---- ties (prototype) ----
     proto_units: EnumProperty(
         name="Prototype Units", default="IN", update=_units_update,
+        description="Units for the full-size (prototype) measurements: spacing, variation, "
+                    "stagger and tie plates. Changing it converts the values",
         items=[("IN", "Inches", "Prototype sizes in inches"),
                ("MM", "Millimetres", "Prototype sizes in millimetres")])
     proto_units_prev: StringProperty(default="IN", options={"HIDDEN"})
     size_mode: EnumProperty(
         name="Size By", default="COUNT", update=_strip_update,
+        description="Set the strip by its number of ties, or by the longest strip that fits "
+                    "your printer",
         items=[("COUNT", "Number of Ties", "Enter how many ties the strip has"),
                ("LENGTH", "Max Length", "Enter the longest strip your printer takes; "
                                         "the number of ties is worked out to fit")])
     tie_count: IntProperty(name="Number of Ties", default=20, min=2, soft_max=200,
-                           update=_strip_update)
+                           update=_strip_update, description="How many ties the strip has")
     max_length: FloatProperty(
         name="Max Length", default=200.0, min=1.0, soft_max=1000.0, precision=1,
         description="Longest printed strip, in model millimetres, for example your printer's "
@@ -121,12 +144,17 @@ class TIESTRIP_Settings(bpy.types.PropertyGroup):
     # ---- strip ----
     strip_type: EnumProperty(
         name="Strip Type", default="STRAIGHT", update=_strip_update,
+        description="Straight strips are joined under both rails; flexible strips under one "
+                    "rail per gap, so they bend into curves",
         items=[("STRAIGHT", "Straight", "Two connectors between each pair of ties"),
                ("FLEX", "Flexible", "One connector between each pair of ties, alternating "
                                     "sides, so the printed strip bends into curves")])
     flex_first: EnumProperty(
         name="First Connector", default="LEFT", update=_strip_update,
-        items=[("LEFT", "Left Rail", ""), ("RIGHT", "Right Rail", "")])
+        description="Which rail gets the connector in the first gap of a flexible strip; "
+                    "the sides alternate after that",
+        items=[("LEFT", "Left Rail", "First connector under the left rail, looking along the strip"),
+               ("RIGHT", "Right Rail", "First connector under the right rail, looking along the strip")])
     connector_width: _model("Connector Width", 0.0,
                             "Width of each connector across the track; 0 uses the rail foot width")
     connector_height: FloatProperty(
@@ -140,10 +168,18 @@ class TIESTRIP_Settings(bpy.types.PropertyGroup):
                                  update=_strip_update)
     printer: EnumProperty(
         name="Printer", default="RESIN", update=_strip_update,
+        description="Printer type: sets the grain detail Weathered Board builds and the "
+                    "too-small-to-print warnings",
         items=[("RESIN", "Resin", "Fine detail; resin printer thresholds"),
                ("FDM", "FDM", "Filament printer; coarser detail and thresholds")])
     seed: IntProperty(name="Seed", default=0, min=0, update=_strip_update,
-                      description="Same seed and settings always give the same strip")
+                      description="Number that picks the ties' random grain, lengths and "
+                                  "offsets. Generate shows the seed it used here; the same "
+                                  "seed and settings always give the same strip")
+    lock_seed: BoolProperty(
+        name="Lock Seed", default=False,
+        description="Use the seed above for new strips instead of a random one, to repeat a "
+                    "strip you liked. Also makes regenerating faster, since the ties are reused")
     pool_threshold: IntProperty(
         name="Unique Up To", default=50, min=2, soft_max=500, update=_strip_update,
         description="Strips with up to this many ties get a separate board per tie; "
@@ -163,16 +199,45 @@ class TIESTRIP_Settings(bpy.types.PropertyGroup):
     random_turn: BoolProperty(name="Random Turn", default=True, update=_strip_update,
                               description="Turn random ties end for end")
 
-    # ---- spike holes (model mm) ----
+    # ---- spikes (model mm) ----
+    fastening: EnumProperty(
+        name="Fastening", default="HOLES", update=_strip_update,
+        description="How the rail is held: holes for real spikes, or spikes printed on the ties "
+                    "that the rail slides in under",
+        items=[("HOLES", "Spike Holes", "Holes for real spikes; you spike the rail down"),
+               ("PRINTED", "Printed Spikes", "Spikes printed on the ties; the rail slides in "
+                                             "from the end of the strip, under the spike heads")])
+    spike_shank: _model("Shank Width", 0.4, "Width of each printed spike's square shank")
+    spike_overhang: _model("Head Overhang", 0.2, "How far each spike head reaches over the rail foot")
+    spike_head: _model("Head Thickness", 0.2, "Thickness of each printed spike head")
+    spike_side_clear: _model("Side Clearance", 0.15,
+                             "Gap between the rail foot edge and each shank; generous so the "
+                             "rail slides in easily")
+    spike_top_clear: _model("Top Clearance", 0.10,
+                            "Gap between the top of the rail foot and the underside of each head")
+    spike_chamfer: FloatProperty(
+        name="Head Chamfer", default=45.0, min=0.0, max=80.0, precision=0, step=500,
+        update=_strip_update,
+        description="Angle from horizontal of the slope under each spike head, so the head "
+                    "doesn't overhang straight out from the shank. 45 prints without supports; "
+                    "0 leaves the underside flat. Over the rail foot the underside stays flat")
+    spike_every: IntProperty(name="Spike Every Nth Tie", default=1, min=1, soft_max=6,
+                             update=_strip_update,
+                             description="1 spikes every tie; 2 or 3 makes long rails easier to slide in")
+    spike_bare_ends: IntProperty(name="Bare End Ties", default=1, min=0, soft_max=5,
+                                 update=_strip_update,
+                                 description="Ties at each end of the strip left without spikes, "
+                                             "so rail joiners slide onto the foot")
     hole_diameter: _model("Hole Diameter", 0.5, "Spike hole diameter; match your spikes")
     hole_clearance: _model("Clearance from Foot", 0.0, "Gap between the rail foot and each hole")
-    use_stagger: BoolProperty(name="Stagger Holes", default=True, update=_strip_update,
-                              description="Offset gauge-side and field-side holes along the tie, "
+    use_stagger: BoolProperty(name="Stagger", default=True, update=_strip_update,
+                              description="Offset gauge-side and field-side spikes along the tie, "
                                           "as on the prototype")
     stagger: _proto("Stagger", 2.0, "Distance between gauge-side and field-side holes, along the track")
 
     # ---- tie plates ----
-    plates_on: BoolProperty(name="Tie Plates", default=False, update=_plate_update)
+    plates_on: BoolProperty(name="Tie Plates", default=False, update=_plate_update,
+                            description="Add a tie plate under each rail on every tie")
     plate_length: _proto("Plate Length", 14.0, "Tie plate length, across the track", _plate_update)
     plate_width: _proto("Plate Width", 7.75, "Tie plate width, along the track", _plate_update)
     plate_thickness: _proto("Plate Thickness", 0.75, "Tie plate thickness", _plate_update)
@@ -180,6 +245,7 @@ class TIESTRIP_Settings(bpy.types.PropertyGroup):
                        _plate_update)
     shoulders: EnumProperty(
         name="Shoulders", default="DOUBLE", update=_plate_update,
+        description="Raised ribs on the tie plate beside the rail foot",
         items=[("NONE", "None", "Flat plate"),
                ("FIELD", "Field Side Only", "One shoulder outboard of each rail"),
                ("DOUBLE", "Double", "Shoulders on both sides of the rail foot")])
@@ -244,6 +310,14 @@ class TIESTRIP_Settings(bpy.types.PropertyGroup):
             strip_type=self.strip_type, flex_first=self.flex_first,
             connector_width=self.connector_width, connector_height_frac=self.connector_height,
             hole_diameter=self.hole_diameter, hole_clearance=self.hole_clearance,
+            fastening=self.fastening, foot_edge=self.rail_edge,
+            foot_web=self.rail_foot_web if self.rail_preset else 0.0,
+            web_width=self.rail_web if self.rail_preset else 0.0,
+            spike_shank=self.spike_shank, spike_overhang=self.spike_overhang,
+            spike_head=self.spike_head, spike_side_clear=self.spike_side_clear,
+            spike_top_clear=self.spike_top_clear, spike_chamfer=self.spike_chamfer,
+            spike_every=self.spike_every,
+            spike_bare_ends=self.spike_bare_ends,
             stagger=f("stagger") if self.use_stagger else 0.0,
             length_jitter=f("length_jitter"), end_jitter=f("end_jitter"),
             yaw_jitter=self.yaw_jitter,
@@ -258,6 +332,22 @@ class TIESTRIP_Settings(bpy.types.PropertyGroup):
         return spec
 
     # ---- presets ----
+
+    def apply_rail_values(self, values: dict, name: str) -> None:
+        """Fill the rail sizes from a Model Rail Generator preset, or clear to Custom.
+
+        ``values`` is keyed by setting name (see rail_bridge.FIELDS). With
+        ``name`` empty the typed-in sizes are kept and the preset-only web
+        values are cleared.
+        """
+        with quiet():
+            for key, value in values.items():
+                setattr(self, key, value)
+            if not name:
+                self.rail_foot_web = self.rail_web = 0.0
+            self.rail_preset = name
+            self.rail_modified = False
+        _strip_update(self, None)
 
     def plate_values(self) -> dict:
         """Tie plate settings with lengths in inches, for a plate preset."""

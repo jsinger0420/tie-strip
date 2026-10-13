@@ -10,7 +10,7 @@ import math
 
 import numpy as np
 
-from .layout import Box, Hole
+from .layout import Box, Hole, Spike
 
 # Triangles of a box whose 8 corners are ordered
 # (x0y0z0, x1y0z0, x1y1z0, x0y1z0, x0y0z1, x1y0z1, x1y1z1, x0y1z1).
@@ -79,6 +79,45 @@ def cylinders(items: list[Hole], segments: int | None = None) -> tuple[np.ndarra
         vs.append(np.vstack([bottom, top, centres]))
         ts.append(template + k * (2 * n + 2))
     return np.vstack(vs), np.vstack(ts).astype(np.int32)
+
+
+def spikes(items: list[Spike]) -> tuple[np.ndarray, np.ndarray]:
+    """Printed spikes as one mesh of separate closed shells, one per spike.
+
+    Each spike is its cross-section (``Spike.outline``: shank, head and the
+    chamfer under the head) run along X, so the whole spike is a single
+    solid with no faces touching.
+    """
+    if not items:
+        return empty()
+    vs, ts, offset = [], [], 0
+    for sp in items:
+        yz = sp.outline()
+        n = len(yz)
+        # The shank's top outer corner (point 2) sees every other point, so a
+        # fan from it fills the outline even with the chamfer's corners.
+        order = list(range(3, n)) + [0, 1]
+        fan = [(2, a, b) for a, b in zip(order, order[1:])]
+        side = []
+        for a in range(n):
+            b = (a + 1) % n
+            side += [(a, b, n + b), (a, n + b, n + a)]
+        cap0 = [(c, b, a) for a, b, c in fan]  # x0 end
+        cap1 = [(n + a, n + b, n + c) for a, b, c in fan]  # x1 end
+        t = np.array(side + cap0 + cap1, dtype=np.int32)
+        v = np.array([(sp.x0, y, z) for y, z in yz] + [(sp.x1, y, z) for y, z in yz])
+        if _signed_volume(v, t) < 0:  # the outline runs the other way on the other side
+            t = t[:, ::-1].copy()
+        vs.append(v)
+        ts.append(t + offset)
+        offset += 2 * n
+    return np.vstack(vs), np.vstack(ts).astype(np.int32)
+
+
+def _signed_volume(verts: np.ndarray, tris: np.ndarray) -> float:
+    """Signed volume of a closed mesh; positive when its triangles face outward."""
+    a, b, c = verts[tris[:, 0]], verts[tris[:, 1]], verts[tris[:, 2]]
+    return float(np.einsum("ij,ij->i", a, np.cross(b, c)).sum() / 6.0)
 
 
 def combine(*parts: tuple[np.ndarray, np.ndarray]) -> tuple[np.ndarray, np.ndarray]:

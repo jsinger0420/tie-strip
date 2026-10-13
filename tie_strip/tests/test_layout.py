@@ -190,6 +190,123 @@ class TestLayout(unittest.TestCase):
         self.assertIn("34 %", msg)
 
 
+class TestPrintedSpikes(unittest.TestCase):
+    """Printed spikes instead of holes: placement, head height, ties chosen, checks."""
+
+    def spec(self, **kw):
+        """HO Code 83 sizes from Model Rail Generator's typical proportions."""
+        base = dict(foot_width=1.855, head_width=0.97, fastening=layout.PRINTED,
+                    foot_edge=0.169, foot_web=0.358, web_width=0.422)
+        base.update(kw)
+        return ho_spec(**base)
+
+    def test_no_holes_four_spikes_per_spiked_tie(self):
+        """Printed spikes replace the holes; one bare tie each end by default."""
+        lay = layout.compute(self.spec(tie_count=10))
+        self.assertTrue(lay.ok, lay.errors)
+        self.assertEqual(lay.holes, [])
+        self.assertEqual(len(lay.spikes), 4 * 8)
+
+    def test_every_nth_and_bare_ends(self):
+        """Every Nth tie counts from the first spiked tie."""
+        s = self.spec(spike_every=3, spike_bare_ends=2)
+        self.assertEqual(layout.spiked_ties(s, 12), [2, 5, 8])
+        self.assertEqual(layout.spiked_ties(self.spec(spike_bare_ends=0), 3), [0, 1, 2])
+
+    def test_head_clears_the_foot_where_it_sits(self):
+        """The head's underside is above the foot thickness under its inner edge, plus clearance."""
+        s = self.spec(spike_overhang=0.2, spike_top_clear=0.1)
+        tu = layout.foot_under_head(s)
+        run = (1.855 - 0.422) / 2
+        self.assertAlmostEqual(tu, 0.169 + (0.358 - 0.169) * 0.2 / run)
+        lay = layout.compute(s)
+        sp = lay.spikes[0]
+        self.assertAlmostEqual(sp.z_head, lay.tie_height + tu + 0.1)
+        self.assertAlmostEqual(sp.z_top - sp.z_head, s.spike_head)
+        self.assertLess(sp.z0, lay.tie_height)  # shank reaches into the tie
+
+    def test_typed_in_rail_is_flat(self):
+        """Without the web values the foot is treated as flat at the edge thickness."""
+        s = self.spec(foot_web=0.0, web_width=0.0)
+        self.assertEqual(layout.foot_under_head(s), 0.169)
+
+    def test_head_over_foot_shank_beside_it(self):
+        """Shank stands clear of the foot; head reaches back over it by the overhang."""
+        s = self.spec(spike_side_clear=0.15, spike_shank=0.4, spike_overhang=0.2)
+        lay = layout.compute(s)
+        yr, hf = lay.rail_y, 1.855 / 2
+        for sp in lay.spikes:
+            rail = yr if sp.y_head > 0 else -yr
+            self.assertAlmostEqual(abs(sp.y_shank_in - rail), hf + 0.15)
+            self.assertAlmostEqual(abs(sp.y_shank_out - rail), hf + 0.55)
+            self.assertAlmostEqual(abs(sp.y_head - rail), hf - 0.2)
+
+    def test_on_tie_plates_heads_rise_by_the_plate(self):
+        """With plates the rail sits on the plate, so the heads move up by its thickness."""
+        flat = layout.compute(self.spec())
+        plated = layout.compute(self.spec(plates=True))
+        tp = plated.plates[0].z1 - flat.tie_height
+        self.assertAlmostEqual(plated.spikes[0].z_head - flat.spikes[0].z_head, tp)
+
+    def test_errors(self):
+        """Missing foot thickness, no overhang, or a head reaching the web stop the build."""
+        self.assertFalse(layout.compute(self.spec(foot_edge=0.0)).ok)
+        self.assertFalse(layout.compute(self.spec(spike_overhang=0.0)).ok)
+        self.assertFalse(layout.compute(self.spec(spike_overhang=0.8)).ok)
+
+    def test_fdm_warns_below_o(self):
+        """Printed spikes are flagged on FDM at HO, not on resin."""
+        s = self.spec()
+        lay = layout.compute(s)
+        self.assertTrue(any("FDM below O" in w for w in layout.printability(s, lay, "FDM")))
+        self.assertFalse(any("FDM below O" in w for w in layout.printability(s, lay, "RESIN")))
+
+    def test_chamfer_shortens_the_flat_overhang(self):
+        """A chamfer leaves only the part over the foot flat; 0 degrees leaves it all flat."""
+        flat = layout.compute(self.spec(spike_chamfer=0.0)).summary["flat_overhang"]
+        self.assertAlmostEqual(flat, 0.2 + 0.15)
+        chamfered = layout.compute(self.spec(spike_chamfer=45.0)).summary["flat_overhang"]
+        self.assertLess(chamfered, 0.21)
+        self.assertGreater(chamfered, 0.0)
+
+    def test_chamfer_clears_the_foot_corner(self):
+        """The slope passes the foot's top corner by the top and the side clearance."""
+        for angle in (30.0, 45.0, 60.0, 80.0):
+            s = self.spec(spike_chamfer=angle)
+            hf = s.foot_width / 2
+            under, _z, _flat = layout.spike_underside(s, hf)
+            (u1, z1), (u2, z2) = under[-2], under[-1]  # the sloped segment
+            k = (z1 - z2) / (u2 - u1)  # rise per mm toward the rail
+            at_edge = z2 + (u2 - hf) * k
+            self.assertGreaterEqual(at_edge + 1e-9, s.foot_edge + s.spike_top_clear)
+            u_at_foot_top = u2 - (s.foot_edge - z2) / k if s.foot_edge > z2 else u2
+            self.assertGreaterEqual(u_at_foot_top - hf + 1e-9, min(s.spike_side_clear, u2 - hf))
+
+    def test_chamfer_angle_limits(self):
+        """Chamfers must be 0 or 30 to 80 degrees."""
+        self.assertTrue(layout.compute(self.spec(spike_chamfer=0.0)).ok)
+        self.assertFalse(layout.compute(self.spec(spike_chamfer=20.0)).ok)
+        self.assertFalse(layout.compute(self.spec(spike_chamfer=85.0)).ok)
+
+    def test_chamfered_spike_volume_matches_its_outline(self):
+        """The fan fills the chamfered outline exactly: volume = outline area x length."""
+        lay = layout.compute(self.spec(tie_count=3, spike_bare_ends=0, spike_chamfer=30.0))
+        for sp in lay.spikes[:4]:
+            v, t = meshgen.spikes([sp])
+            area = abs(sum(y1 * z2 - y2 * z1 for (y1, z1), (y2, z2)
+                           in zip(sp.outline(), sp.outline()[1:] + sp.outline()[:1]))) / 2
+            self.assertEqual(meshgen.open_edges(t), 0)
+            self.assertAlmostEqual(meshgen._signed_volume(v, t), area * (sp.x1 - sp.x0))
+
+    def test_spike_meshes_are_watertight_and_outward(self):
+        """Each spike is one closed solid, facing outward on both rails."""
+        lay = layout.compute(self.spec(tie_count=3, spike_bare_ends=0))
+        v, t = meshgen.spikes(lay.spikes)
+        self.assertEqual(meshgen.open_edges(t), 0)
+        for sp in lay.spikes:
+            self.assertGreater(meshgen._signed_volume(*meshgen.spikes([sp])), 0)
+
+
 class TestMeshgen(unittest.TestCase):
     """meshgen: shapes are closed and outward-facing, and boards land in place."""
 

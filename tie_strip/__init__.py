@@ -2,7 +2,7 @@
 
 Builds a strip of weathered ties (made by the Weathered Board add-on,
 0.1.5 or later) joined by low connectors under the rails, with spike holes
-and optional tie plates, scaled for a model railroad scale and exported
+or printed spikes and optional tie plates, scaled for a model railroad scale and exported
 as an STL in millimetres.
 
 The layout, shapes and plate presets (layout.py, meshgen.py, plates.py,
