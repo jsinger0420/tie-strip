@@ -110,10 +110,11 @@ class TIESTRIP_OT_new_seed(bpy.types.Operator):
         return {"FINISHED"}
 
 
+# The same choices as the panel's Export setting (properties.TIESTRIP_Settings.export_what).
 EXPORT_WHAT = [
-    ("BOTH", "Tie Strip and Rail", "Each tie strip together with its rail, in the same file"),
-    ("STRIP", "Tie Strip Only", "Just the tie strips, ready to print"),
-    ("RAIL", "Rail Only", "Just the rail laid on the tie strips (made with Include Rail)"),
+    ("BOTH", "Entire Track", "The tie strip and its rail, together in one file"),
+    ("STRIP", "Tie Strip Only", "Just the tie strip, ready to print"),
+    ("RAIL", "Rail Only", "Just the rail laid on the tie strip (made with Include Rail)"),
 ]
 
 
@@ -126,8 +127,8 @@ class TIESTRIP_OT_export_stl(bpy.types.Operator, ExportHelper):
     filter_glob: StringProperty(default="*.stl", options={"HIDDEN"})
     export_what: EnumProperty(
         name="Export", items=EXPORT_WHAT, default="STRIP",
-        description="What to write: the tie strip and its rail together, the tie strip only, "
-                    "or the rail only. Rail exists only on strips generated with Include Rail")
+        description="What to write: the entire track (tie strip and its rail), the tie strip "
+                    "only, or the rail only. Rail exists only on strips generated with Include Rail")
     one_file_per_strip: BoolProperty(
         name="One File per Strip",
         description="Write each selected strip (or its rail) to its own file, named after the "
@@ -141,9 +142,14 @@ class TIESTRIP_OT_export_stl(bpy.types.Operator, ExportHelper):
         return bool(build.selected_strips(context, include_rail_parents=True))
 
     def invoke(self, context, event):
-        """Open the file browser on the default file name, next to the .blend file."""
+        """Open the file browser on the default file name, next to the .blend file.
+
+        The Export choice starts from the panel's setting; a different choice
+        made in the file browser is written back to it.
+        """
         folder = os.path.dirname(bpy.data.filepath) if bpy.data.filepath else os.path.expanduser("~")
         self.filepath = os.path.join(folder, build.file_name(_settings(context)))
+        self.export_what = _settings(context).export_what
         context.window_manager.fileselect_add(self)
         return {"RUNNING_MODAL"}
 
@@ -163,6 +169,8 @@ class TIESTRIP_OT_export_stl(bpy.types.Operator, ExportHelper):
         name plus ``_<strip name>``, with characters a file name can't hold
         replaced by ``_``; strips with nothing to export are skipped.
         """
+        if _settings(context).export_what != self.export_what:
+            _settings(context).export_what = self.export_what  # remember the choice
         strips = build.selected_strips(context, include_rail_parents=True)
         groups = [(obj, build.export_objects(obj, self.export_what)) for obj in strips]
         groups = [(obj, objs) for obj, objs in groups if objs]

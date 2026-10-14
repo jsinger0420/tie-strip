@@ -137,6 +137,8 @@ class TIESTRIP_PT_main(_Panel, bpy.types.Panel):
         else:
             row.enabled = not missing
             row.operator("tie_strip.generate", icon="MESH_GRID")
+        row = col.row(align=True)
+        row.prop(s, "export_what", expand=True)
         col.operator("tie_strip.export_stl", icon="EXPORT")
         if s.last_report:
             col.label(text=s.last_report)
@@ -214,7 +216,10 @@ def _rail_options(col, s):
     """Under Include Rail: end overhang, then the rail length or why rail can't be drawn."""
     body = col.column()
     body.enabled = s.rail_on
-    body.prop(s, "rail_overhang", text="End Overhang (mm)")
+    body.prop(s, "rail_overhang_auto")
+    sub = body.column()
+    sub.enabled = not s.rail_overhang_auto
+    sub.prop(s, "rail_overhang", text="End Overhang (mm)")
     if not s.rail_on:
         return
     shape, err = s.rail_shape()
@@ -226,10 +231,14 @@ def _rail_options(col, s):
     lay = layout.compute(s.to_spec())
     if not lay.ok:
         return
-    lengths = []
+    lengths, spacing = [], lay.summary["spacing"]
     for y in (lay.rail_y, -lay.rail_y):
-        x0, x1 = rail.ends(lay.tie_x, lay.tie_width, y, s.rail_overhang, lay.curve_radius)
+        x0, x1 = rail.ends(lay.tie_x, lay.tie_width, y, s.rail_overhang_value(),
+                           lay.curve_radius, spacing)
         lengths.append(rail.length(x0, x1, y, lay.curve_radius))
+    if s.rail_overhang_auto:
+        over = rail.half_gap(spacing, lay.tie_width, lay.rail_y, lay.curve_radius)
+        sub.label(text=f"Half tie gap: {over:.2f} mm past the end ties", icon="INFO")
     row = body.row()
     if min(lengths) <= 0.01:
         row.alert = True

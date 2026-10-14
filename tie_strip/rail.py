@@ -15,9 +15,11 @@ layout assumes. Because the sizes are copied into Tie Strip's settings,
 rail still builds when Model Rail Generator is later disabled.
 
 Positions follow layout.py: X along the track, Y across it (+Y is the left
-rail), Z up, model millimetres. Each rail runs from the outer face of the
-first tie to the outer face of the last, plus ``overhang`` at each end
-(negative stops it short). On a curved strip the rail is laid out straight
+rail), Z up, model millimetres. By default (Half Tie Gap) each rail runs
+half a tie spacing past the first and last tie centres, so rail on strips
+laid end to end meets in the middle of the gap between them. Otherwise it
+runs from the outer face of the first tie to the outer face of the last,
+plus ``overhang`` at each end (negative stops it short). On a curved strip the rail is laid out straight
 in slices short enough to follow the arc, then bent onto it with
 ``meshgen.curve_map``, so it lies exactly on the rail seats of the rigid,
 radial ties.
@@ -154,22 +156,42 @@ def triangulate(pts) -> list[tuple[int, int, int]]:
     return tris
 
 
-def ends(tie_x, tie_width: float, y: float, overhang: float,
-         radius: float = 0.0) -> tuple[float, float]:
+def ends(tie_x, tie_width: float, y: float, overhang: float | None,
+         radius: float = 0.0, spacing: float = 0.0) -> tuple[float, float]:
     """Where a rail at ``y`` starts and stops, as distances along the strip centreline (X).
 
-    Flush with the outer faces of the end ties, plus ``overhang`` model mm
-    at each end. On a curve the ties are rigid and point at the centre, so
-    on a rail at radius r = radius - y a tie face is asin((Wt/2) / r) from
-    its tie's centre line, and the overhang is measured along the rail.
+    With ``overhang`` None (Half Tie Gap) the rail runs half a tie
+    ``spacing`` past the first and last tie centres, so it ends in the
+    middle of the gap a neighbouring strip would leave: strips laid end to
+    end at the same spacing get rail that meets exactly, straight or curved.
+    Otherwise it ends flush with the outer faces of the end ties, plus
+    ``overhang`` model mm at each end. On a curve the ties are rigid and
+    point at the centre, so on a rail at radius r = radius - y a tie face is
+    asin((Wt/2) / r) from its tie's centre line, and the overhang is
+    measured along the rail.
     """
     first, last = min(tie_x), max(tie_x)
-    if radius <= 0:
+    if overhang is None:
+        d = spacing / 2
+    elif radius <= 0:
         d = tie_width / 2 + overhang
     else:
         r = radius - y
         d = radius * (math.asin(min(1.0, tie_width / 2 / r)) + overhang / r)
     return first - d, last + d
+
+
+def half_gap(spacing: float, tie_width: float, y: float, radius: float = 0.0) -> float:
+    """The overhang Half Tie Gap gives a rail at ``y``, model mm along the rail.
+
+    Half the gap between neighbouring ties at that rail: (P - Wt) / 2 on a
+    straight strip; on a curve, from the end tie's face to half a spacing
+    past its centre, along the rail at radius r = radius - y.
+    """
+    if radius <= 0:
+        return (spacing - tie_width) / 2
+    r = radius - y
+    return r * (spacing / 2 / radius - math.asin(min(1.0, tie_width / 2 / r)))
 
 
 def length(x0: float, x1: float, y: float, radius: float = 0.0) -> float:
@@ -210,17 +232,20 @@ def mesh(shape: RailShape, x0: float, x1: float, y: float, z: float,
 
 
 def place(shape: RailShape, tie_x, tie_width: float, rail_y: float, seat_z: float,
-          overhang: float = 0.0, radius: float = 0.0) -> list[tuple[str, np.ndarray, np.ndarray, float]]:
+          overhang: float | None = 0.0, radius: float = 0.0,
+          spacing: float = 0.0) -> list[tuple[str, np.ndarray, np.ndarray, float]]:
     """Both rails for a strip: [(side, vertices, triangles, length mm), ...], left rail first.
 
     ``rail_y`` is the rail centreline offset (layout.rail_y), ``seat_z`` the
     rail seat height, ``radius`` the curve radius (0 for straight and
-    flexible strips). Raises ValueError when a negative overhang leaves no rail.
+    flexible strips), ``spacing`` the tie spacing in model mm (used when
+    ``overhang`` is None, Half Tie Gap; see ``ends``). Raises ValueError
+    when a negative overhang leaves no rail.
     """
     from . import meshgen
     out = []
     for side, y in (("L", rail_y), ("R", -rail_y)):
-        x0, x1 = ends(tie_x, tie_width, y, overhang, radius)
+        x0, x1 = ends(tie_x, tie_width, y, overhang, radius, spacing)
         if x1 - x0 <= 0.01:
             raise ValueError("The end overhang is so far negative that no rail is left; "
                              "make it closer to 0.")

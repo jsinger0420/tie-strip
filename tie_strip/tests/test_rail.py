@@ -90,6 +90,29 @@ class TestRailPlacement(unittest.TestCase):
             self.assertAlmostEqual(np.sign(v[:, 1].mean()), 1 if side == "L" else -1)
             self.assertAlmostEqual(length, lay.summary["strip_length"])
 
+    def test_half_tie_gap_joins_strips(self):
+        """Half Tie Gap: rail is N spacings long, so strips laid end to end meet exactly."""
+        lay = layout.compute(ho_spec())
+        p, n = lay.summary["spacing"], len(lay.tie_x)
+        x0, x1 = rail.ends(lay.tie_x, lay.tie_width, lay.rail_y, None, spacing=p)
+        self.assertAlmostEqual(x1 - x0, n * p)
+        self.assertAlmostEqual(rail.half_gap(p, lay.tie_width, lay.rail_y), lay.summary["gap"] / 2)
+        # the auto value matches entering the same overhang by hand
+        o = rail.half_gap(p, lay.tie_width, lay.rail_y)
+        self.assertAlmostEqual(rail.ends(lay.tie_x, lay.tie_width, lay.rail_y, o)[1], x1)
+
+    def test_half_tie_gap_on_curve(self):
+        """On a curve each rail covers N spacings of angle, and the hand-entered equivalent agrees."""
+        radius = 22 * 25.4
+        lay = layout.compute(ho_spec(strip_type=layout.CURVED, curve_radius=radius))
+        p, n = lay.summary["spacing"], len(lay.tie_x)
+        for y in (lay.rail_y, -lay.rail_y):
+            x0, x1 = rail.ends(lay.tie_x, lay.tie_width, y, None, radius, p)
+            self.assertAlmostEqual(rail.length(x0, x1, y, radius), n * p * (radius - y) / radius)
+            o = rail.half_gap(p, lay.tie_width, y, radius)
+            self.assertGreater(o, 0)
+            self.assertAlmostEqual(rail.ends(lay.tie_x, lay.tie_width, y, o, radius)[1], x1)
+
     def test_negative_overhang_limit(self):
         """An overhang that leaves no rail is refused."""
         lay = layout.compute(ho_spec())

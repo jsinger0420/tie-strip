@@ -324,13 +324,18 @@ class TIESTRIP_Settings(bpy.types.PropertyGroup):
         description="Also add two rail objects sitting on the rail seats, parented to the "
                     "strip, to check the fit and for renders. They use the rail profile and "
                     "sizes above. Export STL can write the tie strip, the rail, or both")
+    rail_overhang_auto: BoolProperty(
+        name="Half Tie Gap", default=True, update=_strip_update,
+        description="End each rail half a tie gap past the end ties, so rail on strips laid "
+                    "end to end meets in the middle of the gap between them. Turn off to "
+                    "enter your own End Overhang")
     rail_overhang: FloatProperty(
         name="End Overhang", default=0.0, soft_min=-20.0, soft_max=50.0, precision=2, step=10,
         update=_strip_update,
-        description="How far the rail sticks out past the outer face of the end ties, at each "
-                    "end, in model millimetres, measured along the rail. 0 ends it flush with "
-                    "the ties; negative stops it short, for example to leave room for rail "
-                    "joiners")
+        description="With Half Tie Gap off: how far the rail sticks out past the outer face of "
+                    "the end ties, at each end, in model millimetres, measured along the rail. "
+                    "0 ends it flush with the ties; negative stops it short, for example to "
+                    "leave room for rail joiners")
     seat_pad: BoolProperty(name="Flatten Rail Seats", default=True, update=_strip_update,
                            description="Fill the grain flat where the rail or tie plate sits")
 
@@ -339,6 +344,14 @@ class TIESTRIP_Settings(bpy.types.PropertyGroup):
     plate_modified: BoolProperty(default=False, options={"HIDDEN"})
     strip_preset: StringProperty(default="", options={"HIDDEN"})
     strip_modified: BoolProperty(default=False, options={"HIDDEN"})
+    export_what: EnumProperty(
+        name="Export", default="STRIP",
+        description="What Export STL writes for each selected strip: the entire track (tie "
+                    "strip and its rail), the tie strip only, or the rail only. Rail exists "
+                    "only on strips generated with Include Rail",
+        items=[("BOTH", "Entire Track", "The tie strip and its rail, together in one file"),
+               ("STRIP", "Tie Strip Only", "Just the tie strip, ready to print"),
+               ("RAIL", "Rail Only", "Just the rail laid on the tie strip")])
     export_template: StringProperty(
         name="File Name", default="tie_strip_{scale}_{type}_{n}.stl",
         description="Default STL file name; {scale}, {type} and {n} are filled in")
@@ -429,6 +442,10 @@ class TIESTRIP_Settings(bpy.types.PropertyGroup):
             spec.tie_count = ties_for_length(spec, self.max_length)
         return spec
 
+    def rail_overhang_value(self):
+        """The End Overhang to build with: None for Half Tie Gap, else the value entered (model mm)."""
+        return None if self.rail_overhang_auto else self.rail_overhang
+
     def rail_shape(self):
         """The rail cross-section for the rail objects, as rail.shape_from_sizes returns it.
 
@@ -495,7 +512,7 @@ class TIESTRIP_Settings(bpy.types.PropertyGroup):
         skip = {"rna_type", "name", "proto_units_prev", "radius_units_prev", "use_arc_angle",
                 "plate_modified",
                 "strip_preset",
-                "strip_modified", "last_report"}
+                "strip_modified", "last_report", "export_what"}
         return {p.identifier: getattr(self, p.identifier)
                 for p in self.bl_rna.properties if p.identifier not in skip}
 

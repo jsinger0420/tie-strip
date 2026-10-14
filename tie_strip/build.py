@@ -180,7 +180,7 @@ def add_rails(s, spec, lay, strip, coll) -> tuple[list, str]:
     seat = lay.tie_height + (spec.model(spec.plate_thickness) if spec.plates else 0.0)
     try:
         rails = rail.place(shape, lay.tie_x, lay.tie_width, lay.rail_y, seat,
-                           s.rail_overhang, lay.curve_radius)
+                           s.rail_overhang_value(), lay.curve_radius, lay.summary["spacing"])
     except ValueError as e:
         return [], f"Rail not added: {e}"
     mat = _rail_material()
