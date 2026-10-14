@@ -46,6 +46,73 @@ def boxes(items: list[Box]) -> tuple[np.ndarray, np.ndarray]:
     return verts, tris.astype(np.int32)
 
 
+def bars(items: list[Box], max_step: float) -> tuple[np.ndarray, np.ndarray]:
+    """Boxes cut into equal slices along X, no longer than ``max_step``, as closed shells.
+
+    Used for connectors that are bent onto a curve: each slice stays
+    straight, so more slices follow the curve more closely. The slices of
+    one box share their faces, so each box is still one watertight solid.
+    """
+    if not items:
+        return empty()
+    vs, ts, offset = [], [], 0
+    for b in items:
+        k = max(1, int(math.ceil((b.x1 - b.x0) / max_step - 1e-9)))
+        xs = np.linspace(b.x0, b.x1, k + 1)
+        # Four corners of the cross-section at each slice boundary:
+        # (y0, z0), (y1, z0), (y1, z1), (y0, z1).
+        ring = [(b.y0, b.z0), (b.y1, b.z0), (b.y1, b.z1), (b.y0, b.z1)]
+        v = np.array([(x, y, z) for x in xs for y, z in ring], dtype=np.float64)
+        t = []
+        for j in range(k):
+            a, c = 4 * j, 4 * (j + 1)
+            for q in range(4):
+                r = (q + 1) % 4
+                t += [(a + q, c + r, c + q), (a + q, a + r, c + r)]  # side faces, outward
+        t += [(0, 2, 1), (0, 3, 2)]  # x0 end, facing -X
+        e = 4 * k
+        t += [(e, e + 1, e + 2), (e, e + 2, e + 3)]  # x1 end, facing +X
+        vs.append(v)
+        ts.append(np.array(t, dtype=np.int32) + offset)
+        offset += len(v)
+    return np.vstack(vs), np.vstack(ts).astype(np.int32)
+
+
+def bend_step(radius: float, tolerance: float = 0.002) -> float:
+    """Longest straight slice that stays within ``tolerance`` mm of an arc of ``radius``.
+
+    A chord of length L sits L^2 / (8 r) inside its arc.
+    """
+    return math.sqrt(8.0 * max(radius, 1e-9) * tolerance)
+
+
+def curve_map(verts: np.ndarray, radius: float, tie_x=None) -> np.ndarray:
+    """Move straight-layout vertices onto a curve of ``radius`` (model mm, to the centreline).
+
+    The vectorised form of ``layout.curve_point``: X is the distance along
+    the centreline, Y across it, and the curve turns toward +Y. With
+    ``tie_x`` None every vertex is bent onto the curve (connectors). With
+    ``tie_x`` (the tie centres) each vertex moves rigidly with the nearest
+    tie, so ties and everything on them keep their shape and point at the
+    curve's centre. Z is unchanged. Both keep the triangles facing outward.
+    """
+    if len(verts) == 0 or radius <= 0:
+        return verts
+    x, y = verts[:, 0], verts[:, 1]
+    if tie_x is None:
+        a = x
+    else:
+        centres = np.asarray(tie_x, dtype=np.float64)
+        a = centres[np.abs(x[:, None] - centres[None, :]).argmin(axis=1)]
+    phi = a / radius
+    u = x - a
+    c, s = np.cos(phi), np.sin(phi)
+    out = verts.copy()
+    out[:, 0] = radius * s + u * c - y * s
+    out[:, 1] = radius * (1 - c) + u * s + y * c
+    return out
+
+
 def hole_segments(d: float) -> int:
     """Sides for a hole cutter: about one per 0.1 mm of circumference, 12 to 32."""
     return int(min(32, max(12, round(math.pi * d / 0.1))))

@@ -3,7 +3,7 @@
 import os
 
 import bpy
-from bpy.props import BoolProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, StringProperty
 from bpy_extras.io_utils import ExportHelper
 
 from . import build, plates, preset_store, rail_bridge, wb_bridge
@@ -110,24 +110,35 @@ class TIESTRIP_OT_new_seed(bpy.types.Operator):
         return {"FINISHED"}
 
 
+EXPORT_WHAT = [
+    ("BOTH", "Tie Strip and Rail", "Each tie strip together with its rail, in the same file"),
+    ("STRIP", "Tie Strip Only", "Just the tie strips, ready to print"),
+    ("RAIL", "Rail Only", "Just the rail laid on the tie strips (made with Include Rail)"),
+]
+
+
 class TIESTRIP_OT_export_stl(bpy.types.Operator, ExportHelper):
-    """Export the selected tie strips as STL files in millimetres, ready for a slicer"""
+    """Export the selected tie strips, their rail, or both, as STL files in millimetres"""
 
     bl_idname = "tie_strip.export_stl"
     bl_label = "Export STL"
     filename_ext = ".stl"
     filter_glob: StringProperty(default="*.stl", options={"HIDDEN"})
+    export_what: EnumProperty(
+        name="Export", items=EXPORT_WHAT, default="STRIP",
+        description="What to write: the tie strip and its rail together, the tie strip only, "
+                    "or the rail only. Rail exists only on strips generated with Include Rail")
     one_file_per_strip: BoolProperty(
         name="One File per Strip",
-        description="Write each selected strip to its own file, named after the file name "
-                    "chosen plus the strip's name",
+        description="Write each selected strip (or its rail) to its own file, named after the "
+                    "file name chosen plus the strip's name",
         default=False,
     )
 
     @classmethod
     def poll(cls, context):
-        """Only available when at least one selected object is a tie strip."""
-        return bool(build.selected_strips(context))
+        """Only available when a tie strip, or a rail on one, is selected."""
+        return bool(build.selected_strips(context, include_rail_parents=True))
 
     def invoke(self, context, event):
         """Open the file browser on the default file name, next to the .blend file."""
@@ -136,29 +147,49 @@ class TIESTRIP_OT_export_stl(bpy.types.Operator, ExportHelper):
         context.window_manager.fileselect_add(self)
         return {"RUNNING_MODAL"}
 
-    def execute(self, context):
-        """Write the selected strips to the chosen file, or each to its own file.
+    def draw(self, context):
+        """The options beside the file browser: what to export, and one file per strip."""
+        col = self.layout.column()
+        col.label(text="Export:")
+        col.prop(self, "export_what", expand=True)
+        col.prop(self, "one_file_per_strip")
 
-        Only tie strips are exported, even if other objects are selected too.
-        With ``one_file_per_strip`` each file is the chosen name plus
-        ``_<strip name>``, with characters a file name can't hold replaced by ``_``.
+    def execute(self, context):
+        """Write the chosen parts of the selected strips to the file, or each strip to its own.
+
+        Selecting a strip's rail counts as selecting the strip. Only tie
+        strips and their rail are exported, even if other objects are
+        selected too. With ``one_file_per_strip`` each file is the chosen
+        name plus ``_<strip name>``, with characters a file name can't hold
+        replaced by ``_``; strips with nothing to export are skipped.
         """
-        strips = build.selected_strips(context)
+        strips = build.selected_strips(context, include_rail_parents=True)
+        groups = [(obj, build.export_objects(obj, self.export_what)) for obj in strips]
+        groups = [(obj, objs) for obj, objs in groups if objs]
+        if not groups:
+            self.report({"ERROR"}, "The selected tie strips have no rail. Tick Include Rail in "
+                                   "Scale and Track and generate them again.")
+            return {"CANCELLED"}
+        skipped = len(strips) - len(groups)
         try:
             if not self.one_file_per_strip:
-                build.export_stl(context, strips, self.filepath)
-                self.report({"INFO"}, f"Exported {len(strips)} strip(s) to "
-                                      f"{os.path.basename(self.filepath)}")
-                return {"FINISHED"}
-            stem, ext = os.path.splitext(self.filepath)
-            for obj in strips:
-                safe = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in obj.name)
-                build.export_stl(context, [obj], f"{stem}_{safe}{ext}")
+                build.export_stl(context, [o for _strip, objs in groups for o in objs],
+                                 self.filepath)
+                written = os.path.basename(self.filepath)
+            else:
+                stem, ext = os.path.splitext(self.filepath)
+                for strip, objs in groups:
+                    safe = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in strip.name)
+                    build.export_stl(context, objs, f"{stem}_{safe}{ext}")
+                written = f"{len(groups)} files next to {os.path.basename(self.filepath)}"
         except RuntimeError as err:
             self.report({"ERROR"}, f"Export failed: {err}")
             return {"CANCELLED"}
-        self.report({"INFO"}, f"Exported {len(strips)} files next to "
-                              f"{os.path.basename(self.filepath)}")
+        what = dict((k, n) for k, n, _d in EXPORT_WHAT)[self.export_what].lower()
+        msg = f"Exported {what} for {len(groups)} strip(s) to {written}"
+        if skipped:
+            msg += f"; {skipped} strip(s) without rail skipped"
+        self.report({"INFO"}, msg)
         return {"FINISHED"}
 
 
@@ -177,10 +208,10 @@ class TIESTRIP_OT_set_board_preset(bpy.types.Operator):
 
 
 class TIESTRIP_OT_set_rail_preset(bpy.types.Operator):
-    """Fill the rail sizes from this Model Rail Generator preset"""
+    """Fill the rail sizes from this Model Rail Generator rail profile"""
 
     bl_idname = "tie_strip.set_rail_preset"
-    bl_label = "Rail Preset"
+    bl_label = "Rail Profile"
     bl_options = {"REGISTER", "UNDO", "INTERNAL"}
     name: StringProperty()
 

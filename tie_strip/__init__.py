@@ -2,11 +2,13 @@
 
 Builds a strip of weathered ties (made by the Weathered Board add-on,
 0.1.5 or later) joined by low connectors under the rails, with spike holes
-or printed spikes and optional tie plates, scaled for a model railroad scale and exported
-as an STL in millimetres.
+or printed spikes and optional tie plates, scaled for a model railroad
+scale and exported as an STL in millimetres. Strips are straight,
+flexible, or printed already curved to a set radius. Optionally, rail
+objects are laid on the rail seats (not part of the STL) to check the fit.
 
 The layout, shapes and plate presets (layout.py, meshgen.py, plates.py,
-scales.py) are plain Python with no bpy, so they can be tested outside
+rail.py, scales.py) are plain Python with no bpy, so they can be tested outside
 Blender. Blender modules are only imported in ``register``.
 """
 

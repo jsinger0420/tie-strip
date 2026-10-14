@@ -3,8 +3,8 @@
 Model Rail Generator (1.1 or later, API version 1) publishes its public API
 as ``sys.modules["model_rail_api"]`` while it is enabled. Tie Strip uses
 only ``list_builtin_presets``, ``list_user_presets`` and ``get_preset``, and
-copies the values it needs into its own settings, so a strip still builds
-when the rail add-on is later disabled.
+copies the values it needs into its own settings, so a strip (and the rail
+laid on it, see rail.py) still builds when the rail add-on is later disabled.
 
 All values are model millimetres.
 """
@@ -23,6 +23,9 @@ FIELDS = {
     "rail_edge": "base_edge_thickness",
     "rail_foot_web": "base_thickness",
     "rail_web": "web_thickness",
+    "rail_height": "height",
+    "rail_head_depth": "head_depth",
+    "rail_corner": "head_corner_radius",
 }
 
 

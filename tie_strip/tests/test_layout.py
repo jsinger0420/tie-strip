@@ -307,8 +307,154 @@ class TestPrintedSpikes(unittest.TestCase):
             self.assertGreater(meshgen._signed_volume(*meshgen.spikes([sp])), 0)
 
 
+class TestCurves(unittest.TestCase):
+    """Curved strips: ties turned onto the curve, bent connectors, arc angle and checks."""
+
+    R = 22 * IN  # an HO 22 in curve, model mm
+
+    def spec(self, **kw):
+        """An HO curved strip on a 22 in radius."""
+        base = dict(strip_type=layout.CURVED, curve_radius=self.R)
+        base.update(kw)
+        return ho_spec(**base)
+
+    def test_two_connectors_per_gap_meeting_the_rigid_ties(self):
+        """Each connector, once bent, reaches exactly e into both rigid ties, inner and outer rail."""
+        e = 0.5
+        lay = layout.compute(self.spec(connector_overlap=e))
+        self.assertTrue(lay.ok, lay.errors)
+        self.assertEqual(len(lay.connectors), 2 * 9)
+        wt = lay.tie_width
+        for c in lay.connectors[:2]:
+            y = (c.y0 + c.y1) / 2
+            end = layout.curve_point(self.R, c.x0, y)  # bent connector end
+            tie = lay.tie_x[0]
+            centre = layout.curve_point(self.R, tie, 0.0)
+            ux = layout.curve_point(self.R, tie + 1.0, 0.0, anchor=tie)  # the tie's own +X
+            dx, dy = ux[0] - centre[0], ux[1] - centre[1]
+            along = (end[0] - centre[0]) * dx + (end[1] - centre[1]) * dy  # distance from tie centre line
+            self.assertAlmostEqual(along, wt / 2 - e, places=9)
+
+    def test_rigid_points_keep_their_shape_and_point_at_the_centre(self):
+        """A tie moved onto the curve keeps its size, and its length points at the curve centre."""
+        lay = layout.compute(self.spec())
+        x = lay.tie_x[-1]
+        a = layout.curve_point(self.R, x, 15.0, anchor=x)
+        b = layout.curve_point(self.R, x, -15.0, anchor=x)
+        c = layout.curve_point(self.R, x + 1.3, -15.0, anchor=x)
+        self.assertAlmostEqual(math.dist(a, b), 30.0, places=9)
+        self.assertAlmostEqual(math.dist(b, c), 1.3, places=9)
+        # The line through the tie's ends passes through the curve's centre (0, R).
+        cross = (a[0] - b[0]) * (self.R - b[1]) - (a[1] - b[1]) * (0 - b[0])
+        self.assertAlmostEqual(cross, 0.0, places=6)
+        # The middle of the strip stays where a straight strip would be.
+        self.assertEqual(layout.curve_point(self.R, 0.0, 3.0), (0.0, 3.0))
+
+    def test_bent_points_follow_circles(self):
+        """Bent points stay at radius R - y from the centre: the left rail is the inner one."""
+        for x in (-40.0, 0.0, 25.0):
+            for y in (-9.0, 9.0):
+                X, Y = layout.curve_point(self.R, x, y)
+                self.assertAlmostEqual(math.hypot(X, Y - self.R), self.R - y, places=9)
+
+    def test_curve_map_matches_curve_point(self):
+        """meshgen.curve_map is the vectorised curve_point, rigid and bent."""
+        lay = layout.compute(self.spec())
+        v = np.array([[lay.tie_x[2] + 0.4, 7.0, 1.0], [lay.tie_x[7] - 0.9, -12.0, 0.5]])
+        bent = meshgen.curve_map(v, self.R)
+        rigid = meshgen.curve_map(v, self.R, lay.tie_x)
+        for k, (x, y, z) in enumerate(v):
+            np.testing.assert_allclose(bent[k, :2], layout.curve_point(self.R, x, y), atol=1e-9)
+            anchor = min(lay.tie_x, key=lambda t: abs(t - x))
+            np.testing.assert_allclose(rigid[k, :2], layout.curve_point(self.R, x, y, anchor),
+                                       atol=1e-9)
+            self.assertEqual(rigid[k, 2], z)
+
+    def test_bent_bars_are_watertight_and_follow_the_arc(self):
+        """Sliced, bent connectors stay closed, face outward, and have about the sector's volume."""
+        box = layout.Box(-20.0, 20.0, 8.0, 10.0, 0.0, 1.0)
+        v, t = meshgen.bars([box], meshgen.bend_step(self.R - 10))
+        self.assertGreater(len(v), 8)
+        bent = meshgen.curve_map(v, self.R)
+        self.assertEqual(meshgen.open_edges(t), 0)
+        r0, r1 = self.R - 10, self.R - 8
+        sector = 0.5 * (r1 ** 2 - r0 ** 2) * (40.0 / self.R) * 1.0
+        self.assertAlmostEqual(meshgen._signed_volume(bent, t), sector, delta=sector * 1e-3)
+
+    def test_arc_angle_fills_the_angle(self):
+        """ties_for_angle picks a whole number of spacings that covers the angle exactly."""
+        s = self.spec()
+        n, spacing = layout.ties_for_angle(s, 30.0)
+        self.assertEqual(n, round(self.R * math.radians(30) / (19.5 * IN / 87.1)))
+        self.assertAlmostEqual(abs(spacing - 19.5 * IN), 0, delta=19.5 * IN * 0.1)
+        s.tie_count, s.spacing = n, spacing
+        lay = layout.compute(s)
+        self.assertTrue(lay.ok, lay.errors)
+        self.assertAlmostEqual(lay.summary["arc_angle"], 30.0, places=9)
+
+    def test_gap_is_smallest_at_the_inner_ends(self):
+        """The reported gap is at the inner tie ends, smaller than straight; outer is larger."""
+        straight = layout.compute(ho_spec()).summary["gap"]
+        m = layout.compute(self.spec()).summary
+        self.assertLess(m["gap"], straight)
+        self.assertGreater(m["gap_max"], straight)
+
+    def test_tight_radius_and_too_much_curve_are_errors(self):
+        """Ties that overlap at their inner ends, or more than 180 degrees, stop the build."""
+        lay = layout.compute(self.spec(curve_radius=20.0))
+        self.assertFalse(lay.ok)
+        self.assertTrue(any("inner ends" in e or "smaller than" in e for e in lay.errors))
+        self.assertFalse(layout.compute(self.spec(curve_radius=0.0)).ok)
+        self.assertFalse(layout.compute(self.spec(tie_count=200, curve_radius=100.0)).ok)
+
+    def test_overall_size_of_a_curved_strip(self):
+        """The printed size reaches the outer corners of the end ties, which fan outward."""
+        straight = layout.compute(ho_spec(tie_count=40)).summary
+        lay = layout.compute(self.spec(tie_count=40))
+        a, hx, hy = lay.tie_x[-1], lay.tie_width / 2, lay.tie_length / 2
+        corner = layout.curve_point(self.R, a + hx, -hy, anchor=a)  # outer corner, last tie
+        self.assertAlmostEqual(lay.summary["overall_length"], 2 * corner[0], places=9)
+        self.assertGreater(lay.summary["overall_width"], straight["overall_width"])
+
+    def test_ties_for_length_on_a_curve(self):
+        """On a curve, the tie count for a max length fits and is the most that fits."""
+        for max_len in (60.0, 200.0):
+            s = self.spec(length_jitter=2 * IN, end_jitter=1 * IN, yaw_jitter=0.5)
+            n = layout.ties_for_length(s, max_len)
+            s.tie_count = n
+            self.assertLessEqual(layout.compute(s).summary["overall_length"], max_len + 1e-9)
+            s.tie_count = n + 1
+            self.assertGreater(layout.compute(s).summary["overall_length"], max_len)
+
+    def test_curved_shoulders_stop_short_of_the_plate_ends(self):
+        """On curves, shoulders end just inside the plate so the union never meets near-flush faces."""
+        lay = layout.compute(self.spec(plates=True, shoulders="DOUBLE"))
+        plate, shoulder = lay.plates[0], lay.shoulders[0]
+        self.assertAlmostEqual(shoulder.x0 - plate.x0, layout.CURVE_TRIM)
+        self.assertAlmostEqual(plate.x1 - shoulder.x1, layout.CURVE_TRIM)
+        straight = layout.compute(ho_spec(plates=True, shoulders="DOUBLE"))
+        self.assertEqual(straight.shoulders[0].x0, straight.plates[0].x0)
+
+    def test_parts_stay_with_their_tie(self):
+        """Holes, spikes and plates are each nearest their own tie, so they move with it."""
+        lay = layout.compute(self.spec(plates=True, stagger=4 * IN))
+        p = lay.tie_x[1] - lay.tie_x[0]
+        for h in lay.holes:
+            self.assertLess(min(abs(h.x - x) for x in lay.tie_x), p / 2)
+        for b in lay.plates + lay.shoulders:
+            self.assertLess(max(abs(b.x0 - b.x1), 0) / 2 + min(abs((b.x0 + b.x1) / 2 - x)
+                                                               for x in lay.tie_x), p / 2)
+
+
 class TestMeshgen(unittest.TestCase):
     """meshgen: shapes are closed and outward-facing, and boards land in place."""
+
+    def test_bars_are_watertight_and_outward(self):
+        """Sliced boxes are closed with the same volume as the box."""
+        v, t = meshgen.bars([layout.Box(0, 3, 0, 1, 0, 2)], 0.7)
+        self.assertEqual(len(v), 4 * 6)
+        self.assertEqual(meshgen.open_edges(t), 0)
+        self.assertAlmostEqual(meshgen._signed_volume(v, t), 6.0)
 
     def test_boxes_are_watertight_and_outward(self):
         """Boxes have no open edges and a positive volume."""

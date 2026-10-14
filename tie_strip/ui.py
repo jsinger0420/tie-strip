@@ -2,7 +2,7 @@
 
 import bpy
 
-from . import layout, operators, plates, preset_store, rail_bridge, wb_bridge
+from . import layout, operators, plates, preset_store, rail, rail_bridge, wb_bridge
 
 
 def _s(context):
@@ -33,9 +33,9 @@ class TIESTRIP_MT_board_presets(bpy.types.Menu):
 
 
 class TIESTRIP_MT_rail_presets(bpy.types.Menu):
-    """Rail presets from Model Rail Generator, or Custom to type the sizes"""
+    """Rail profiles from Model Rail Generator's presets, or Custom to type the sizes"""
 
-    bl_label = "Rail Presets"
+    bl_label = "Rail Profiles"
     bl_idname = "TIESTRIP_MT_rail_presets"
 
     def draw(self, context):
@@ -43,7 +43,7 @@ class TIESTRIP_MT_rail_presets(bpy.types.Menu):
         col = self.layout
         col.operator("tie_strip.set_rail_preset", text="Custom (type the sizes)").name = ""
         if not rail_bridge.available():
-            col.label(text="Enable Model Rail Generator for rail presets", icon="INFO")
+            col.label(text="Enable Model Rail Generator for rail profiles", icon="INFO")
             return
         builtin, saved = rail_bridge.preset_names()
         if saved:
@@ -150,7 +150,14 @@ class TIESTRIP_PT_main(_Panel, bpy.types.Panel):
             return
         m = lay.summary
         box.label(text="Model size", icon="INFO")
-        box.label(text=f"Gap between ties {m['gap']:.2f} mm")
+        if "radius" in m:
+            box.label(text=f"Gap between ties {m['gap']:.2f} mm (inner ends) to "
+                           f"{m['gap_max']:.2f} mm (outer ends)")
+            per_circle = 360.0 / m["arc_angle"]
+            box.label(text=f"Curve {m['radius']:.1f} mm radius, covers {m['arc_angle']:.2f} deg "
+                           f"({per_circle:.1f} strips per circle)")
+        else:
+            box.label(text=f"Gap between ties {m['gap']:.2f} mm")
         box.label(text=f"Printed size {m['overall_length']:.1f} x {m['overall_width']:.1f} x "
                        f"{m['top']:.2f} mm ({len(lay.tie_x)} ties)")
         box.label(text=f"Rail centres at +/-{m['rail_centre']:.2f} mm")
@@ -167,13 +174,13 @@ class TIESTRIP_PT_main(_Panel, bpy.types.Panel):
 
 
 class TIESTRIP_PT_track(_Panel, bpy.types.Panel):
-    """Model scale, gauge and the rail measurements"""
+    """Model scale, gauge, the rail profile and whether to include rail"""
 
     bl_label = "Scale and Track"
     bl_parent_id = "TIESTRIP_PT_main"
 
     def draw(self, context):
-        """Scale (and custom ratio), then gauge and rail sizes in mm."""
+        """Scale (and custom ratio), gauge, rail profile and sizes in mm, then Include Rail."""
         s = _s(context)
         col = self.layout.column()
         col.prop(s, "scale")
@@ -181,7 +188,7 @@ class TIESTRIP_PT_track(_Panel, bpy.types.Panel):
             col.prop(s, "scale_custom")
         col.prop(s, "gauge", text="Gauge (mm)")
         col.separator()
-        col.label(text="Rail (from a preset or measured, mm):")
+        col.label(text="Rail Profile (preset or measured, mm):")
         text = (s.rail_preset or "Custom") + (" (modified)" if s.rail_preset and s.rail_modified else "")
         col.menu("TIESTRIP_MT_rail_presets", text=text, icon="IPO_LINEAR")
         col.prop(s, "rail_foot", text="Foot Width (mm)")
@@ -189,12 +196,49 @@ class TIESTRIP_PT_track(_Panel, bpy.types.Panel):
         row = col.row()
         row.alert = s.fastening == "PRINTED" and s.rail_edge <= 0
         row.prop(s, "rail_edge", text="Foot Edge Thickness (mm)")
+        row = col.row()
+        row.alert = s.rail_on and s.rail_height <= 0
+        row.prop(s, "rail_height", text="Rail Height (mm)")
         if s.fastening == "PRINTED" and s.rail_preset and rail_bridge.is_builtin(s.rail_preset):
             hint = col.column()
             hint.scale_y = 0.8
             hint.label(text="Built-in rail sizes are typical, not measured.", icon="INFO")
             hint.label(text="For printed spikes, measure your rail and")
             hint.label(text="save it as a preset in Model Rail Generator.")
+        col.separator()
+        col.prop(s, "rail_on")
+        _rail_options(col, s)
+
+
+def _rail_options(col, s):
+    """Under Include Rail: end overhang, then the rail length or why rail can't be drawn."""
+    body = col.column()
+    body.enabled = s.rail_on
+    body.prop(s, "rail_overhang", text="End Overhang (mm)")
+    if not s.rail_on:
+        return
+    shape, err = s.rail_shape()
+    if shape is None:
+        row = body.row()
+        row.alert = True
+        row.label(text=err, icon="ERROR")
+        return
+    lay = layout.compute(s.to_spec())
+    if not lay.ok:
+        return
+    lengths = []
+    for y in (lay.rail_y, -lay.rail_y):
+        x0, x1 = rail.ends(lay.tie_x, lay.tie_width, y, s.rail_overhang, lay.curve_radius)
+        lengths.append(rail.length(x0, x1, y, lay.curve_radius))
+    row = body.row()
+    if min(lengths) <= 0.01:
+        row.alert = True
+        row.label(text="The overhang leaves no rail; make it closer to 0.", icon="ERROR")
+    elif lay.curve_radius > 0:
+        row.label(text=f"Rail {lengths[0]:.1f} mm (inner), {lengths[1]:.1f} mm (outer)",
+                  icon="INFO")
+    else:
+        row.label(text=f"Rail {lengths[0]:.1f} mm long, each", icon="INFO")
 
 
 def _inches(v_mm: float) -> str:
@@ -238,8 +282,16 @@ class TIESTRIP_PT_ties(_Panel, bpy.types.Panel):
         col.separator()
         col.prop(s, "proto_units")
         col.prop(s, "tie_spacing", text=f"Spacing ({u})")
-        col.prop(s, "size_mode", expand=True)
-        if s.size_mode == "LENGTH":
+        row = col.row(align=True)
+        # Arc Angle is set in the Strip panel, beside the radius; picking either
+        # button here turns it off.
+        row.prop_enum(s, "size_mode", "COUNT")
+        row.prop_enum(s, "size_mode", "LENGTH")
+        if s.angle_mode():
+            col.label(text=f"Set by arc angle ({s.arc_angle:g} deg) in the Strip panel:",
+                      icon="INFO")
+            _arc_result(col, s, u)
+        elif s.size_mode == "LENGTH":
             col.prop(s, "max_length", text="Max Length (mm)")
             n = s.ties()
             row = col.row()
@@ -256,19 +308,42 @@ class TIESTRIP_PT_ties(_Panel, bpy.types.Panel):
         row.operator("tie_strip.new_seed", text="", icon="FILE_REFRESH")
 
 
+def _arc_result(col, s, u):
+    """A line under the arc angle: the tie count it gives and the adjusted spacing."""
+    spec = s.to_spec()
+    row = col.row()
+    row.alert = spec.tie_count < 2
+    spacing = spec.spacing / (25.4 if s.proto_units == "IN" else 1.0)
+    row.label(text=f"{spec.tie_count} ties, spacing adjusted to {spacing:.2f} {u}")
+
+
 class TIESTRIP_PT_strip(_Panel, bpy.types.Panel):
-    """Straight or flexible strip, the connectors and rail seats"""
+    """Straight, flexible or curved strip, the curve radius, connectors and rail seats"""
 
     bl_label = "Strip"
     bl_parent_id = "TIESTRIP_PT_main"
 
     def draw(self, context):
-        """Strip type, first connector side for flex, connector size, rail seats."""
+        """Strip type, first connector side (flex) or radius (curved), connector size, rail seats."""
         s = _s(context)
         col = self.layout.column()
         col.prop(s, "strip_type", expand=True)
         if s.strip_type == "FLEX":
             col.prop(s, "flex_first")
+        elif s.strip_type == "CURVED":
+            row = col.row(align=True)
+            row.prop(s, "curve_radius", text="Radius")
+            row.prop(s, "radius_units", expand=True)
+            col.prop(s, "use_arc_angle")
+            if s.use_arc_angle:
+                col.prop(s, "arc_angle", text="Arc Angle (degrees)")
+                _arc_result(col, s, _u(s))
+            hint = col.column()
+            hint.scale_y = 0.8
+            hint.label(text="Radius to the track centreline.", icon="INFO")
+            if s.fastening == "PRINTED":
+                hint.label(text="Bend the rail to this radius before")
+                hint.label(text="sliding it in under the spike heads.")
         col.prop(s, "connector_width", text="Connector Width (mm)")
         col.prop(s, "connector_height")
         col.prop(s, "seat_pad")

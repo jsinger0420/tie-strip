@@ -1,9 +1,9 @@
 schema_version = "1.0.0"
 
 id = "tie_strip"
-version = "0.3.0"
+version = "0.5.0"
 name = "Tie Strip Generator"
-tagline = "3D-printable model railroad tie strips, spiked or with printed spikes"
+tagline = "3D-printable model railroad tie strips: straight, flexible or curved"
 maintainer = "John <john@singerlinks.com>"
 type = "add-on"
 

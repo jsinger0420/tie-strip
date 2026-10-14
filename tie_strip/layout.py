@@ -5,6 +5,15 @@ the track, Y across it (+Y is the left rail, looking along +X), Z up.
 The strip is centred on the origin in X and Y, and tie bottoms sit on
 Z = 0, which becomes the print bed.
 
+Curved strips are laid out the same way, straight, and then bent onto the
+curve: X becomes the distance along the track centreline and Y the
+distance from it. Each tie and everything on it (plates, shoulders, seat
+pads, holes, spikes) keeps its shape and turns to point at the centre of
+the curve (``curve_point`` with the tie's centre as the anchor); only the
+connectors bend to follow the rails. The curve turns toward +Y, so the
+left rail is the inner one. A curve that turns right is the same strip
+seen from its other end, so there is no left/right choice.
+
 ``Spec`` holds the inputs. Prototype sizes (ties, spacing, plates, jitter)
 are full-size millimetres; rail sizes, holes and clearances are model
 millimetres, because that is what a modeler measures on their rail.
@@ -20,12 +29,13 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-STRAIGHT, FLEX = "STRAIGHT", "FLEX"
+STRAIGHT, FLEX, CURVED = "STRAIGHT", "FLEX", "CURVED"
 LEFT, RIGHT = "LEFT", "RIGHT"
 SHOULDERS_NONE, SHOULDERS_FIELD, SHOULDERS_DOUBLE = "NONE", "FIELD", "DOUBLE"
 HOLES, PRINTED = "HOLES", "PRINTED"  # how the rail is fastened
 
 HOLE_EXTRA = 1.0  # hole cutters run this far past the bottom and the top, model mm
+CURVE_TRIM = 0.005  # model mm: on curves, shoulders stop this short of the plate ends
 
 
 @dataclass(frozen=True)
@@ -116,6 +126,7 @@ class Spec:
     connector_width: float = 0.0  # model mm; 0 = the rail foot width
     connector_height_frac: float = 0.5  # of the tie height
     connector_overlap: float = 0.3  # model mm into each tie
+    curve_radius: float = 0.0  # model mm to the track centreline; used by CURVED strips
 
     hole_diameter: float = 0.5  # model mm
     hole_clearance: float = 0.0  # model mm, foot edge to hole edge
@@ -168,6 +179,7 @@ class Layout:
     tie_width: float = 0.0
     tie_height: float = 0.0
     rail_y: float = 0.0  # each rail's centreline is at +rail_y and -rail_y
+    curve_radius: float = 0.0  # model mm; 0 = straight. Positions are bent with curve_point
     connectors: list[Box] = field(default_factory=list)
     holes: list[Hole] = field(default_factory=list)
     spikes: list[Spike] = field(default_factory=list)
@@ -223,8 +235,10 @@ def _check_inputs(s: Spec) -> list[str]:
             errs.append("The chamfer under the spike heads must be 0 (none) or 30 to 80 degrees.")
     if not 0 < s.connector_height_frac <= 1:
         errs.append("Connector height must be between 0 and 1 times the tie height.")
-    if s.strip_type not in (STRAIGHT, FLEX):
+    if s.strip_type not in (STRAIGHT, FLEX, CURVED):
         errs.append(f"Unknown strip type '{s.strip_type}'.")
+    elif s.strip_type == CURVED and s.curve_radius <= 0:
+        errs.append("Enter the curve radius (to the track centreline).")
     if s.plates and min(s.plate_length, s.plate_width, s.plate_thickness) <= 0:
         errs.append("Tie plate length, width and thickness must be positive.")
     return errs
@@ -254,6 +268,24 @@ def compute(s: Spec) -> Layout:
         lay.errors.append(
             f"Ties overlap: spacing {p:.2f} mm is not more than the tie width {wt:.2f} mm.")
         return lay
+    gap_max = gap
+    curved = s.strip_type == CURVED
+    if curved:
+        radius = lay.curve_radius = s.curve_radius
+        _half_x, half_y = tie_extent(s)
+        if radius <= half_y + wt:
+            lay.errors.append(f"The curve radius ({radius:.1f} mm) is smaller than the ties are "
+                              f"long; increase the radius.")
+            return lay
+        gap, gap_max = curve_gap(s, radius - half_y), curve_gap(s, radius + half_y)
+        if gap <= 0:
+            lay.errors.append(f"Ties overlap at their inner ends on a {radius:.1f} mm radius; "
+                              "increase the radius or the tie spacing.")
+            return lay
+        if n * p / radius > math.pi + 1e-9:
+            lay.errors.append(f"The strip covers {math.degrees(n * p / radius):.0f} degrees of "
+                              "curve; a curved strip can cover at most 180. Use fewer ties.")
+            return lay
 
     # Shortest tie end, after length and end jitter.
     end_min = lt / 2 - s.model(s.length_jitter) / 2 - s.model(s.end_jitter)
@@ -271,12 +303,19 @@ def compute(s: Spec) -> Layout:
     for k in range(n - 1):
         x0 = lay.tie_x[k] + wt / 2 - e
         x1 = lay.tie_x[k + 1] - wt / 2 + e
-        if s.strip_type == STRAIGHT:
-            sides = (1, -1)
-        else:
+        if s.strip_type == FLEX:
             sides = (first,) if k % 2 == 0 else (-first,)
+        else:
+            sides = (1, -1)
         for side in sides:
             y = side * yr
+            if curved:
+                # Ties are rigid and point at the centre, so on a rail at radius r a
+                # tie face is (wt/2) / r radians from the tie's centre, not wt/2 / R.
+                # Connectors are later bent, so place their ends in centreline terms.
+                r = radius - y
+                d = radius * math.asin(min(1.0, (wt / 2 - e) / r))
+                x0, x1 = lay.tie_x[k] + d, lay.tie_x[k + 1] - d
             lay.connectors.append(Box(x0, x1, y - wc / 2, y + wc / 2, 0.0, hc))
 
     # Tie plates and shoulders.
@@ -287,6 +326,10 @@ def compute(s: Spec) -> Layout:
         lp, wp, bias = s.model(s.plate_length), s.model(s.plate_width), s.model(s.plate_bias)
         ws, cs = s.model(s.shoulder_width), s.shoulder_clearance
         embed = max(0.1, s.seat_depth + 0.02) if s.seat_pad else 0.1
+        # On a curve the plate and shoulder ends are turned with rounding error,
+        # so ends that would line up exactly are nearly-but-not-quite flush, which
+        # the Boolean union can't join. Stop the shoulders just short instead.
+        trim = CURVE_TRIM if curved else 0.0
         if wp > wt:
             lay.warnings.append(f"Tie plates ({wp:.2f} mm) are wider than the ties ({wt:.2f} mm).")
         if half_foot > lp / 2 - abs(bias):
@@ -313,7 +356,7 @@ def compute(s: Spec) -> Layout:
                     inner = side * yr + f * (half_foot + cs)
                     outer = inner + f * ws
                     y0, y1 = sorted((inner, outer))
-                    lay.shoulders.append(Box(x - wp / 2, x + wp / 2, y0, y1, z0, z1))
+                    lay.shoulders.append(Box(x - wp / 2 + trim, x + wp / 2 - trim, y0, y1, z0, z1))
         top = ht + tp + hs
     elif s.seat_pad and s.seat_depth > 0:
         # No plates: fill the grain flat where the rail sits.
@@ -333,15 +376,24 @@ def compute(s: Spec) -> Layout:
         outer = _spike_holes(s, lay, half_foot, st, end_min, top)
 
     half_x, half_y = tie_extent(s)
+    if curved:
+        overall_length, overall_width = curved_extent(s, n)
+    else:
+        overall_length, overall_width = (n - 1) * p + 2 * half_x, 2 * half_y
     lay.summary = {
         "tie_length": lt, "tie_width": wt, "tie_height": ht,
-        "gap": gap, "strip_length": (n - 1) * p + wt,
-        "overall_length": (n - 1) * p + 2 * half_x, "overall_width": 2 * half_y,
+        "gap": gap, "gap_max": gap_max, "strip_length": (n - 1) * p + wt,
+        "overall_length": overall_length, "overall_width": overall_width,
         "rail_centre": yr, "outer_hole": outer,
         "connector_width": wc, "connector_height": hc,
         "connectors": float(len(lay.connectors)),
         "top": top,
+        "spacing": p,
     }
+    if curved:
+        # The angle the strip covers when strips are laid end to end, each tie
+        # taking one spacing of the curve.
+        lay.summary.update({"radius": radius, "arc_angle": math.degrees(n * p / radius)})
     lay.summary.update(lay.summary_extra)
     return lay
 
@@ -497,16 +549,91 @@ def tie_extent(s: Spec) -> tuple[float, float]:
     return max(half_x, wt / 2), max(half_y, half_len)
 
 
+def curve_point(radius: float, x: float, y: float, anchor: float | None = None
+                ) -> tuple[float, float]:
+    """Where a point of the straight layout lands on a curved strip, model mm.
+
+    ``x`` is the distance along the track centreline from the middle of the
+    strip and ``y`` the distance across it. The curve turns toward +Y, its
+    centre at (0, radius). With ``anchor`` None the point is bent onto the
+    curve (connectors). With ``anchor`` set to a tie's centre x, the point
+    moves rigidly with that tie: the tie centre goes onto the centreline
+    arc and the tie turns to point at the curve's centre, keeping its shape.
+    """
+    a = x if anchor is None else anchor
+    phi = a / radius
+    u = x - a  # along the tie's own X (its width) for rigid points; 0 when bent
+    c, s = math.cos(phi), math.sin(phi)
+    return radius * s + u * c - y * s, radius * (1 - c) + u * s + y * c
+
+
+def curve_gap(s: Spec, rho: float) -> float:
+    """Gap between neighbouring ties of a curved strip, at ``rho`` mm from the curve's centre.
+
+    Each tie is a rigid rectangle turned to point at the centre, so the gap
+    shrinks toward the inner tie ends: the ties are one spacing apart on the
+    centreline, an angle P / R, and each tie face is atan((Wt / 2) / rho)
+    from its tie's centre line.
+    """
+    p, wt, radius = s.model(s.spacing), s.model(s.tie_width), s.curve_radius
+    if rho <= 0:
+        return -wt
+    return rho * (p / radius - 2 * math.atan(wt / 2 / rho))
+
+
+def curved_extent(s: Spec, n: int) -> tuple[float, float]:
+    """Printed size (along X, across Y) of a curved strip of ``n`` ties, model mm.
+
+    Uses each tie's worst-case outline from ``tie_extent``, turned onto the
+    curve, so the printed strip is never bigger than reported.
+    """
+    p, radius = s.model(s.spacing), s.curve_radius
+    half_x, half_y = tie_extent(s)
+    xs, ys = [], []
+    for i in range(n):
+        a = (i - (n - 1) / 2) * p
+        for du in (-half_x, half_x):
+            for dv in (-half_y, half_y):
+                X, Y = curve_point(radius, a + du, dv, anchor=a)
+                xs.append(X)
+                ys.append(Y)
+    return max(xs) - min(xs), max(ys) - min(ys)
+
+
+def ties_for_angle(s: Spec, angle_deg: float) -> tuple[int, float]:
+    """Ties for a curved strip that covers ``angle_deg`` degrees of curve.
+
+    Returns (tie count, spacing in full-size mm). The count is the nearest
+    whole number of tie spacings in the arc (at least 2), and the spacing is
+    adjusted slightly so the ties fill the arc exactly. Strips laid end to
+    end then keep an even spacing, and a 30 degree strip is exactly 30.
+    """
+    p, radius = s.model(s.spacing), s.curve_radius
+    if p <= 0 or radius <= 0 or angle_deg <= 0:
+        return 0, s.spacing
+    arc = radius * math.radians(angle_deg)
+    n = max(2, int(round(arc / p)))
+    return n, arc / n * s.scale_n
+
+
 def ties_for_length(s: Spec, max_length: float) -> int:
     """The most ties whose overall printed length fits in ``max_length`` model mm.
 
-    May be less than 2 when even two ties don't fit; ``compute`` then
-    reports the error.
+    For a curved strip the length is measured straight across the printed
+    strip (its bounding box along X), and the strip covers at most 180
+    degrees. May be less than 2 when even two ties don't fit; ``compute``
+    then reports the error.
     """
     p = s.model(s.spacing)
     if p <= 0:
         return 0
     half_x, _ = tie_extent(s)
+    if s.strip_type == CURVED and s.curve_radius > 0:
+        n = 1
+        while ((n + 1) * p / s.curve_radius <= math.pi + 1e-9
+               and curved_extent(s, n + 1)[0] <= max_length + 1e-9):
+            n += 1
+        return n
     return int(math.floor((max_length - 2 * half_x) / p + 1e-9)) + 1
 
 

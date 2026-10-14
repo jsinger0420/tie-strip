@@ -4,6 +4,8 @@ Prototype sizes (ties, spacing, jitter, stagger, tie plates) are in the
 units chosen by ``proto_units``, inches by default. Rail sizes, holes and
 clearances are model millimetres. Lengths are plain numbers rather than
 Blender length units, so they read the same whatever the scene units are.
+The curve radius is a model size, in model inches or millimetres as chosen
+by ``radius_units``.
 """
 
 import bpy
@@ -59,6 +61,30 @@ def _units_update(self, context):
         self.proto_units_prev = self.proto_units
 
 
+def _radius_units_update(self, context):
+    """Convert the curve radius when its units change between model inches and mm."""
+    if _quiet or self.radius_units == self.radius_units_prev:
+        return
+    with quiet():
+        mm = self.curve_radius * (25.4 if self.radius_units_prev == "IN" else 1.0)
+        self.curve_radius = mm / 25.4 if self.radius_units == "IN" else mm
+        self.radius_units_prev = self.radius_units
+    _strip_update(self, context)
+
+
+def _get_use_arc_angle(self):
+    """True when the strip's length is set by its arc angle (Size By = Arc Angle)."""
+    return self.size_mode == "ANGLE"
+
+
+def _set_use_arc_angle(self, value):
+    """Switch Size By to Arc Angle, or back to Number of Ties."""
+    if value:
+        self.size_mode = "ANGLE"
+    elif self.size_mode == "ANGLE":
+        self.size_mode = "COUNT"
+
+
 def _plate_update(self, context):
     """Mark the chosen plate preset as modified when a plate setting is edited."""
     if not _quiet and self.plate_preset:
@@ -112,9 +138,16 @@ class TIESTRIP_Settings(bpy.types.PropertyGroup):
     rail_edge: _model("Foot Edge Thickness", 0.0,
                       "Thickness of the rail foot at its outer edge; needed for printed spikes",
                       _rail_update)
-    # From a rail preset only (0 = unknown): used for the printed spike head height and reach.
+    rail_height: _model("Rail Height", 0.0,
+                        "Overall height of the rail, foot bottom to railhead top (Code 83 is "
+                        "2.108 mm). Filled by the rail profile; needed only for Include Rail",
+                        _rail_update)
+    # From a rail preset only (0 = unknown): used for the printed spike head height and reach,
+    # and for drawing the rail (head depth and corner radius only for drawing).
     rail_foot_web: FloatProperty(default=0.0, min=0.0, options={"HIDDEN"})
     rail_web: FloatProperty(default=0.0, min=0.0, options={"HIDDEN"})
+    rail_head_depth: FloatProperty(default=0.0, min=0.0, options={"HIDDEN"})
+    rail_corner: FloatProperty(default=0.0, min=0.0, options={"HIDDEN"})
     rail_preset: StringProperty(default="", options={"HIDDEN"})
     rail_modified: BoolProperty(default=False, options={"HIDDEN"})
 
@@ -128,27 +161,59 @@ class TIESTRIP_Settings(bpy.types.PropertyGroup):
     proto_units_prev: StringProperty(default="IN", options={"HIDDEN"})
     size_mode: EnumProperty(
         name="Size By", default="COUNT", update=_strip_update,
-        description="Set the strip by its number of ties, or by the longest strip that fits "
-                    "your printer",
+        description="Set the strip by its number of ties, by the longest strip that fits "
+                    "your printer, or (curved strips) by the angle of curve it covers",
         items=[("COUNT", "Number of Ties", "Enter how many ties the strip has"),
                ("LENGTH", "Max Length", "Enter the longest strip your printer takes; "
-                                        "the number of ties is worked out to fit")])
+                                        "the number of ties is worked out to fit"),
+               ("ANGLE", "Arc Angle", "Curved strips only: enter the angle of curve the strip "
+                                      "covers, such as 30 degrees; the number of ties is worked "
+                                      "out and the spacing adjusted slightly to fill it exactly")])
     tie_count: IntProperty(name="Number of Ties", default=20, min=2, soft_max=200,
                            update=_strip_update, description="How many ties the strip has")
     max_length: FloatProperty(
         name="Max Length", default=200.0, min=1.0, soft_max=1000.0, precision=1,
         description="Longest printed strip, in model millimetres, for example your printer's "
-                    "build plate length", update=_strip_update)
+                    "build plate length. A curved strip is measured straight across, end to end",
+        update=_strip_update)
+    arc_angle: FloatProperty(
+        name="Arc Angle", default=30.0, min=1.0, max=180.0, precision=1, step=100,
+        update=_strip_update,
+        description="Angle of curve the strip covers, in degrees. Strips laid end to end add "
+                    "up: twelve 30 degree strips make a full circle. The tie spacing is "
+                    "adjusted slightly so a whole number of ties fills the angle")
+    use_arc_angle: BoolProperty(
+        name="Set Length by Arc Angle", get=_get_use_arc_angle, set=_set_use_arc_angle,
+        description="Make the curved strip cover a set angle of curve, such as 30 degrees, "
+                    "instead of a number of ties. The ties are counted for you and the spacing "
+                    "is adjusted slightly so they fill the angle exactly")
     tie_spacing: _proto("Tie Spacing", 19.5, "Centre-to-centre distance between ties")
 
     # ---- strip ----
     strip_type: EnumProperty(
         name="Strip Type", default="STRAIGHT", update=_strip_update,
         description="Straight strips are joined under both rails; flexible strips under one "
-                    "rail per gap, so they bend into curves",
+                    "rail per gap, so they bend into curves; curved strips print already "
+                    "curved to a set radius",
         items=[("STRAIGHT", "Straight", "Two connectors between each pair of ties"),
                ("FLEX", "Flexible", "One connector between each pair of ties, alternating "
-                                    "sides, so the printed strip bends into curves")])
+                                    "sides, so the printed strip bends into curves"),
+               ("CURVED", "Curved", "Printed already curved to the radius below: ties point "
+                                    "at the centre of the curve and two connectors per gap "
+                                    "follow the rails")])
+    curve_radius: FloatProperty(
+        name="Radius", default=22.0, min=0.0, soft_min=1.0, soft_max=2000.0, precision=2,
+        update=_strip_update,
+        description="Radius of the curve, measured to the track centreline, in model units "
+                    "(inches or millimetres, as chosen beside it). For example 22 in for an "
+                    "HO mainline curve. Tie spacing is measured along the centreline")
+    radius_units: EnumProperty(
+        name="Radius Units", default="IN", update=_radius_units_update,
+        description="Units for the curve radius, a model size: inches, as most layout "
+                    "plans give it, or millimetres. Changing it converts the value",
+        items=[("IN", "in", "Curve radius in model inches"),
+               ("MM", "mm", "Curve radius in model millimetres")])
+    radius_units_prev: StringProperty(default="IN", options={"HIDDEN"})
     flex_first: EnumProperty(
         name="First Connector", default="LEFT", update=_strip_update,
         description="Which rail gets the connector in the first gap of a flexible strip; "
@@ -253,6 +318,19 @@ class TIESTRIP_Settings(bpy.types.PropertyGroup):
     shoulder_width: _proto("Shoulder Width", 0.75, "Shoulder width", _plate_update)
     shoulder_clearance: _model("Shoulder Clearance", 0.05,
                                "Gap between the rail foot and each shoulder, so the rail drops in")
+    # ---- rail laid on the strip (for fit checks and renders) ----
+    rail_on: BoolProperty(
+        name="Include Rail", default=False, update=_strip_update,
+        description="Also add two rail objects sitting on the rail seats, parented to the "
+                    "strip, to check the fit and for renders. They use the rail profile and "
+                    "sizes above. Export STL can write the tie strip, the rail, or both")
+    rail_overhang: FloatProperty(
+        name="End Overhang", default=0.0, soft_min=-20.0, soft_max=50.0, precision=2, step=10,
+        update=_strip_update,
+        description="How far the rail sticks out past the outer face of the end ties, at each "
+                    "end, in model millimetres, measured along the rail. 0 ends it flush with "
+                    "the ties; negative stops it short, for example to leave room for rail "
+                    "joiners")
     seat_pad: BoolProperty(name="Flatten Rail Seats", default=True, update=_strip_update,
                            description="Fill the grain flat where the rail or tie plate sits")
 
@@ -276,12 +354,22 @@ class TIESTRIP_Settings(bpy.types.PropertyGroup):
         """A prototype setting in full-size millimetres."""
         return scales.to_full_mm(getattr(self, key), self.proto_units)
 
+    def radius_mm(self) -> float:
+        """The curve radius in model millimetres (0 unless the strip is Curved)."""
+        if self.strip_type != "CURVED":
+            return 0.0
+        return self.curve_radius * (25.4 if self.radius_units == "IN" else 1.0)
+
+    def angle_mode(self) -> bool:
+        """True when the strip is sized by arc angle (Arc Angle chosen on a curved strip)."""
+        return self.size_mode == "ANGLE" and self.strip_type == "CURVED"
+
     def ties(self) -> int:
-        """The number of ties: as entered, or the most that fit in Max Length."""
-        if self.size_mode == "LENGTH":
-            from .layout import ties_for_length
-            return ties_for_length(self.to_spec(count=False), self.max_length)
-        return self.tie_count
+        """The number of ties: as entered, the most that fit in Max Length, or for the arc angle.
+
+        Arc Angle on a strip that isn't curved counts as Number of Ties.
+        """
+        return self.to_spec().tie_count
 
     def tie_size(self):
         """The tie size from the board preset, as wb_bridge.board_size returns it.
@@ -295,19 +383,21 @@ class TIESTRIP_Settings(bpy.types.PropertyGroup):
     def to_spec(self, count: bool = True, **overrides) -> Spec:
         """The settings as a layout Spec, prototype lengths in full-size mm.
 
-        With ``count=False`` the tie count is taken as entered, even in Max
-        Length mode (``ties`` uses this to avoid recursing). ``overrides`` set
-        Spec fields the settings don't hold, such as values measured from
-        the built boards.
+        The tie count is worked out for Max Length and Arc Angle; in Arc
+        Angle mode the spacing is adjusted too, so the ties fill the angle.
+        With ``count=False`` the tie count and spacing are taken as entered.
+        ``overrides`` set Spec fields the settings don't hold, such as values
+        measured from the built boards.
         """
         f = self.full_mm
         (tl, tw, th), _units, tie_error = self.tie_size()
         spec = Spec(
             scale_n=self.scale_n(), gauge=self.gauge, foot_width=self.rail_foot,
             head_width=self.rail_head, tie_length=tl, tie_width=tw,
-            tie_height=th, tie_error=tie_error, tie_count=self.ties() if count else self.tie_count,
+            tie_height=th, tie_error=tie_error, tie_count=self.tie_count,
             spacing=f("tie_spacing"),
             strip_type=self.strip_type, flex_first=self.flex_first,
+            curve_radius=self.radius_mm(),
             connector_width=self.connector_width, connector_height_frac=self.connector_height,
             hole_diameter=self.hole_diameter, hole_clearance=self.hole_clearance,
             fastening=self.fastening, foot_edge=self.rail_edge,
@@ -329,7 +419,29 @@ class TIESTRIP_Settings(bpy.types.PropertyGroup):
         )
         for k, v in overrides.items():
             setattr(spec, k, v)
+        if count and self.angle_mode():
+            from .layout import ties_for_angle
+            n, spacing = ties_for_angle(spec, self.arc_angle)
+            if n >= 2:
+                spec.tie_count, spec.spacing = n, spacing
+        elif count and self.size_mode == "LENGTH":
+            from .layout import ties_for_length
+            spec.tie_count = ties_for_length(spec, self.max_length)
         return spec
+
+    def rail_shape(self):
+        """The rail cross-section for the rail objects, as rail.shape_from_sizes returns it.
+
+        Returns (rail.RailShape or None, error text or ""). Preset-only
+        sizes are used only while a rail preset is chosen; typed-in rail
+        gets typical proportions for them.
+        """
+        from . import rail
+        preset = bool(self.rail_preset)
+        return rail.shape_from_sizes(
+            self.rail_foot, self.rail_head, self.rail_height, self.rail_edge,
+            self.rail_foot_web if preset else 0.0, self.rail_web if preset else 0.0,
+            self.rail_head_depth if preset else 0.0, self.rail_corner if preset else 0.0)
 
     # ---- presets ----
 
@@ -337,14 +449,16 @@ class TIESTRIP_Settings(bpy.types.PropertyGroup):
         """Fill the rail sizes from a Model Rail Generator preset, or clear to Custom.
 
         ``values`` is keyed by setting name (see rail_bridge.FIELDS). With
-        ``name`` empty the typed-in sizes are kept and the preset-only web
-        values are cleared.
+        ``name`` empty the typed-in sizes are kept and the preset-only values
+        (foot thickness at the web, web width, head depth, corner radius)
+        are cleared.
         """
         with quiet():
             for key, value in values.items():
                 setattr(self, key, value)
             if not name:
                 self.rail_foot_web = self.rail_web = 0.0
+                self.rail_head_depth = self.rail_corner = 0.0
             self.rail_preset = name
             self.rail_modified = False
         _strip_update(self, None)
@@ -378,7 +492,9 @@ class TIESTRIP_Settings(bpy.types.PropertyGroup):
 
     def strip_values(self) -> dict:
         """Every setting, for a strip preset."""
-        skip = {"rna_type", "name", "proto_units_prev", "plate_modified", "strip_preset",
+        skip = {"rna_type", "name", "proto_units_prev", "radius_units_prev", "use_arc_angle",
+                "plate_modified",
+                "strip_preset",
                 "strip_modified", "last_report"}
         return {p.identifier: getattr(self, p.identifier)
                 for p in self.bl_rna.properties if p.identifier not in skip}
@@ -391,11 +507,12 @@ class TIESTRIP_Settings(bpy.types.PropertyGroup):
         """
         names = {p.identifier for p in self.bl_rna.properties}
         with quiet():
-            if "proto_units" in values:
-                self.proto_units = values["proto_units"]
-                self.proto_units_prev = values["proto_units"]
+            for units in ("proto_units", "radius_units"):
+                if units in values:
+                    setattr(self, units, values[units])
+                    setattr(self, units + "_prev", values[units])
             for key, value in values.items():
-                if key in names and key != "proto_units":
+                if key in names and key not in ("proto_units", "radius_units"):
                     try:
                         setattr(self, key, value)
                     except (TypeError, ValueError):

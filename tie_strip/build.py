@@ -7,11 +7,16 @@
    connector overlap and the rail seat fill.
 4. Place the ties (turned, offset, angled) and make the connectors,
    rail seat pads, tie plates, shoulders, and either hole cutters or
-   printed spikes.
+   printed spikes. For a curved strip, each tie and its parts are then
+   turned onto the curve as one rigid piece, and the connectors (cut into
+   short slices) are bent to follow the rails.
 5. Join everything with Boolean modifiers (Manifold solver, falling back
    to Exact), then cut any spike holes.
 6. Clean up and check the result is watertight.
 7. Place the new strip at the 3D cursor and select it.
+8. With Include Rail on, lay two rail objects on the rail seats (rail.py),
+   parented to the strip, for fit checks and renders. A rail problem is
+   reported as a warning and the strip is still built.
 
 Like Weathered Board's Add button, every Generate adds a new strip to the
 active collection and leaves earlier strips alone, and uses a new random
@@ -30,10 +35,12 @@ import bmesh
 import bpy
 import numpy as np
 
-from . import layout, meshgen, prefs, wb_bridge
+from . import layout, meshgen, prefs, rail, wb_bridge
 
 RESULT_NAME = "TieStrip"  # new strips are named this; Blender adds .001, .002...
 TAG = "tie_strip"  # custom property marking an object as a generated strip
+RAIL_TAG = "tie_strip_rail"  # custom property marking a rail laid on a strip ("L" or "R")
+RAIL_MATERIAL = "Tie Strip Rail"
 SETTINGS_KEY = "tie_strip_settings"  # the settings the strip was built with, as JSON
 SEED_LIMIT = 2**31
 
@@ -64,9 +71,37 @@ def is_strip(obj) -> bool:
     return obj is not None and obj.type == "MESH" and bool(obj.get(TAG))
 
 
-def selected_strips(context) -> list:
-    """The selected objects that are tie strips, in selection order."""
-    return [o for o in context.selected_objects if is_strip(o)]
+def is_rail(obj) -> bool:
+    """True when ``obj`` is a rail laid on a tie strip by Include Rail."""
+    return obj is not None and obj.type == "MESH" and bool(obj.get(RAIL_TAG))
+
+
+def rails_of(strip) -> list:
+    """The rail objects on ``strip`` (left rail first), if any."""
+    return sorted((o for o in strip.children if is_rail(o)), key=lambda o: str(o.get(RAIL_TAG)))
+
+
+def selected_strips(context, include_rail_parents: bool = False) -> list:
+    """The selected tie strips, in selection order, each once.
+
+    With ``include_rail_parents`` a selected rail counts as selecting the
+    strip it sits on.
+    """
+    out = []
+    for o in context.selected_objects:
+        if include_rail_parents and is_rail(o) and is_strip(o.parent):
+            o = o.parent
+        if is_strip(o) and o not in out:
+            out.append(o)
+    return out
+
+
+def export_objects(strip, what: str) -> list:
+    """What to export for ``strip``: "BOTH" (strip and rail), "STRIP" or "RAIL"."""
+    if what == "STRIP":
+        return [strip]
+    rails = rails_of(strip)
+    return rails if what == "RAIL" else [strip] + rails
 
 
 def _new_object(name, verts, tris, coll) -> bpy.types.Object:
@@ -114,6 +149,51 @@ def _clean(mesh: bpy.types.Mesh) -> int:
         bm.free()
     mesh.update()
     return open_edges
+
+
+def _rail_material() -> bpy.types.Material:
+    """The shared steel-grey material for rail objects, made on first use."""
+    mat = bpy.data.materials.get(RAIL_MATERIAL)
+    if mat is None:
+        mat = bpy.data.materials.new(RAIL_MATERIAL)
+        mat.diffuse_color = (0.35, 0.33, 0.32, 1.0)
+        mat.metallic, mat.roughness = 0.9, 0.45
+        mat.use_nodes = True
+        bsdf = mat.node_tree.nodes.get("Principled BSDF")
+        if bsdf:
+            bsdf.inputs["Base Color"].default_value = (0.35, 0.33, 0.32, 1.0)
+            bsdf.inputs["Metallic"].default_value = 0.9
+            bsdf.inputs["Roughness"].default_value = 0.45
+    return mat
+
+
+def add_rails(s, spec, lay, strip, coll) -> tuple[list, str]:
+    """Lay two rail objects on ``strip``'s rail seats and parent them to it.
+
+    Built in the strip's own coordinates (the strip was built at the
+    origin), so with the strip as parent they sit on it wherever it is
+    moved. Returns (rail objects, warning text or "").
+    """
+    shape, err = s.rail_shape()
+    if shape is None:
+        return [], f"Rail not added: {err}"
+    seat = lay.tie_height + (spec.model(spec.plate_thickness) if spec.plates else 0.0)
+    try:
+        rails = rail.place(shape, lay.tie_x, lay.tie_width, lay.rail_y, seat,
+                           s.rail_overhang, lay.curve_radius)
+    except ValueError as e:
+        return [], f"Rail not added: {e}"
+    mat = _rail_material()
+    objs = []
+    for side, verts, tris, length in rails:
+        name = f"{strip.name} Rail {side}"
+        obj = _new_object(name, verts, tris, coll)
+        obj.data.materials.append(mat)
+        obj.parent = strip
+        obj[RAIL_TAG] = side
+        obj["rail_length_mm"] = round(length, 3)
+        objs.append(obj)
+    return objs, ""
 
 
 def generate(context, progress=None) -> BuildResult:
@@ -178,12 +258,24 @@ def generate(context, progress=None) -> BuildResult:
                              turns[i], yaws[i]), boards[choice[i]].triangles)
         for i, x in enumerate(lay.tie_x)
     ])
-    parts = [("Connectors", meshgen.boxes(lay.connectors)),
-             ("RailSeats", meshgen.boxes(lay.seats)),
+    parts = [("RailSeats", meshgen.boxes(lay.seats)),
              ("TiePlates", meshgen.boxes(lay.plates)),
              ("Shoulders", meshgen.boxes(lay.shoulders)),
              ("Spikes", meshgen.spikes(lay.spikes))]
     holes = meshgen.cylinders(lay.holes)
+    if lay.curve_radius > 0:
+        # Ties and everything standing on them move rigidly onto the curve;
+        # connectors are sliced and bent so they follow the rails.
+        r = lay.curve_radius
+        ties = (meshgen.curve_map(ties[0], r, lay.tie_x), ties[1])
+        parts = [(name, (meshgen.curve_map(v, r, lay.tie_x), t)) for name, (v, t) in parts]
+        holes = (meshgen.curve_map(holes[0], r, lay.tie_x), holes[1])
+        inner = r - lay.rail_y - lay.summary["connector_width"] / 2  # tightest connector edge
+        cv, ct = meshgen.bars(lay.connectors, meshgen.bend_step(inner))
+        connectors = (meshgen.curve_map(cv, r), ct)
+    else:
+        connectors = meshgen.boxes(lay.connectors)
+    parts.insert(0, ("Connectors", connectors))
 
     set_scene_millimetres(scene)
     coll = context.collection or scene.collection
@@ -238,6 +330,13 @@ def generate(context, progress=None) -> BuildResult:
                      f"{info['seconds']:.1f} s. Grain: top {top_cut:.2f} mm, sides {side_cut:.2f} mm.")
     base[TAG] = True
     base[SETTINGS_KEY] = json.dumps(s.strip_values(), default=str)
+    if s.rail_on:
+        rails, rail_warning = add_rails(s, spec, lay, base, coll)
+        if rail_warning:
+            warnings.append(rail_warning)
+        info["rails"] = len(rails)
+        if rails:
+            s.last_report += " Rail added."
     base.location = scene.cursor.location.copy()
     # As in Weathered Board: select the new strip and make it active,
     # without touching earlier strips or the rest of the selection.
@@ -249,7 +348,7 @@ def generate(context, progress=None) -> BuildResult:
 def file_name(s) -> str:
     """The default STL file name from the settings' template."""
     from .scales import scale_label
-    kind = "straight" if s.strip_type == "STRAIGHT" else "flex"
+    kind = {"STRAIGHT": "straight", "FLEX": "flex", "CURVED": "curved"}.get(s.strip_type, "strip")
     name = s.export_template.format(scale=scale_label(s.scale, s.scale_custom), type=kind,
                                     n=s.ties())
     return name if name.lower().endswith(".stl") else name + ".stl"
