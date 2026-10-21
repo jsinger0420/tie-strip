@@ -18,6 +18,12 @@
    parented to the strip, for fit checks and renders. A rail problem is
    reported as a warning and the strip is still built.
 
+Each strip stores the settings it was built with (``SETTINGS_KEY``) and
+the preset state of the panel at that moment (``SETTINGS_META_KEY``).
+Load Settings From Selected reads them back into the panel
+(``stored_settings``), and Regenerate Selected rebuilds a strip in place
+from the panel's current settings (``regenerate``).
+
 Like Weathered Board's Add button, every Generate adds a new strip to the
 active collection and leaves earlier strips alone, and uses a new random
 seed unless Lock Seed is on. The seed used is written back to the panel,
@@ -42,6 +48,10 @@ TAG = "tie_strip"  # custom property marking an object as a generated strip
 RAIL_TAG = "tie_strip_rail"  # custom property marking a rail laid on a strip ("L" or "R")
 RAIL_MATERIAL = "Tie Strip Rail"
 SETTINGS_KEY = "tie_strip_settings"  # the settings the strip was built with, as JSON
+# The panel's preset state when the strip was built (strip preset name and
+# whether it or the plate preset was modified), as JSON. Added in 0.6.0.
+SETTINGS_META_KEY = "tie_strip_settings_meta"
+SETTINGS_FORMAT = 1  # bump if the stored settings change in a way loading must know about
 SEED_LIMIT = 2**31
 
 
@@ -74,6 +84,36 @@ def is_strip(obj) -> bool:
 def is_rail(obj) -> bool:
     """True when ``obj`` is a rail laid on a tie strip by Include Rail."""
     return obj is not None and obj.type == "MESH" and bool(obj.get(RAIL_TAG))
+
+
+def strip_of(obj):
+    """The tie strip ``obj`` is, or the strip it is a rail on; None for anything else."""
+    if is_rail(obj) and is_strip(obj.parent):
+        return obj.parent
+    return obj if is_strip(obj) else None
+
+
+def stored_settings(strip) -> tuple[dict, dict]:
+    """The settings ``strip`` was built with, and the panel's preset state at the time.
+
+    Returns (settings, meta). ``settings`` is keyed by setting name, as
+    TIESTRIP_Settings.strip_values() gave it. ``meta`` holds
+    ``strip_preset``, ``strip_modified`` and ``plate_modified``; it is
+    empty for strips made before 0.6.0. Raises BuildError if the strip
+    has no stored settings (made before 0.3.0) or they can't be read.
+    """
+    raw = strip.get(SETTINGS_KEY)
+    if not raw:
+        raise BuildError(f"{strip.name} has no stored settings (it was made before Tie Strip "
+                         "0.3.0). Generate it again to store them.")
+    try:
+        values = json.loads(raw)
+        meta = json.loads(strip.get(SETTINGS_META_KEY) or "{}")
+    except (TypeError, ValueError) as err:
+        raise BuildError(f"{strip.name}'s stored settings can't be read: {err}") from err
+    if not isinstance(values, dict) or not isinstance(meta, dict):
+        raise BuildError(f"{strip.name}'s stored settings can't be read.")
+    return values, meta
 
 
 def rails_of(strip) -> list:
@@ -330,6 +370,9 @@ def generate(context, progress=None) -> BuildResult:
                      f"{info['seconds']:.1f} s. Grain: top {top_cut:.2f} mm, sides {side_cut:.2f} mm.")
     base[TAG] = True
     base[SETTINGS_KEY] = json.dumps(s.strip_values(), default=str)
+    base[SETTINGS_META_KEY] = json.dumps({
+        "format": SETTINGS_FORMAT, "strip_preset": s.strip_preset,
+        "strip_modified": bool(s.strip_modified), "plate_modified": bool(s.plate_modified)})
     if s.rail_on:
         rails, rail_warning = add_rails(s, spec, lay, base, coll)
         if rail_warning:
@@ -343,6 +386,78 @@ def generate(context, progress=None) -> BuildResult:
     base.select_set(True)
     context.view_layer.objects.active = base
     return BuildResult(base, warnings, info)
+
+
+def _remove_object(obj) -> None:
+    """Delete ``obj``, and its mesh too when nothing else uses it."""
+    mesh = obj.data if obj.type == "MESH" else None
+    bpy.data.objects.remove(obj)
+    if mesh is not None and mesh.users == 0:
+        bpy.data.meshes.remove(mesh)
+
+
+def regenerate(context, old, progress=None) -> BuildResult:
+    """Rebuild the strip ``old`` in place from the scene's current Tie Strip settings.
+
+    A new strip is built exactly as Generate builds one (same seed rule:
+    random unless Lock Seed is on), then takes over ``old``'s place:
+    its name, parent, transform (location, rotation and scale),
+    collections and the materials on the strip. Other objects parented to
+    ``old`` are moved to the new strip; ``old``'s rail objects are
+    deleted, and the new strip gets rail only if Include Rail is on.
+    ``old`` is deleted last, so if the build fails it is left untouched.
+    Returns the new strip's BuildResult.
+    """
+    name = old.name
+    active_before = context.view_layer.objects.active
+    was_active = active_before is not None and strip_of(active_before) == old
+    result = generate(context, progress)
+    new = result.obj
+    s = context.scene.tie_strip
+    temp_name = new.name
+
+    # Same place: copy the parent link and the local transform as they are.
+    new.parent = old.parent
+    new.matrix_parent_inverse = old.matrix_parent_inverse.copy()
+    new.matrix_basis = old.matrix_basis.copy()
+
+    # Same collections as the old strip, for the strip and its rail.
+    new_rails = rails_of(new)
+    targets = list(old.users_collection)
+    if targets:
+        for obj in [new] + new_rails:
+            for coll in list(obj.users_collection):
+                coll.objects.unlink(obj)
+            for coll in targets:
+                coll.objects.link(obj)
+
+    # Keep materials the user put on the strip.
+    if any(m is not None for m in old.data.materials):
+        new.data.materials.clear()
+        for mat in old.data.materials:
+            new.data.materials.append(mat)
+
+    # Anything else parented to the old strip moves to the new one. The new
+    # strip has the same world transform, so the children stay put.
+    for child in list(old.children):
+        if not is_rail(child):
+            child.parent = new
+
+    for obj in rails_of(old) + [old]:
+        _remove_object(obj)
+
+    new.name = name
+    new.data.name = name
+    for obj in new_rails:
+        obj.name = f"{new.name} Rail {obj.get(RAIL_TAG)}"
+    if s.last_report.startswith(temp_name):
+        s.last_report = new.name + s.last_report[len(temp_name):]
+    # Generate made the new strip active; give the active spot back to
+    # whatever had it if that wasn't the old strip.
+    new.select_set(True)
+    if not was_active and active_before is not None:
+        context.view_layer.objects.active = active_before
+    return result
 
 
 def file_name(s) -> str:

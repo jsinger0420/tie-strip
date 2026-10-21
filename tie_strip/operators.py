@@ -31,26 +31,33 @@ def _redraw(context):
             area.tag_redraw()
 
 
-class TIESTRIP_OT_generate(bpy.types.Operator):
-    """Add a new tie strip at the 3D cursor from these settings, with a random seed unless Lock Seed is on. Strips made earlier are kept"""
+class _BuildOperator:
+    """Shared running of a build: busy cursor, wait message, progress bar and reports.
 
-    bl_idname = "tie_strip.generate"
-    bl_label = "Generate Tie Strip"
-    bl_options = {"REGISTER", "UNDO"}
+    Subclasses set ``wait_text`` and implement ``_build``. Blender doesn't
+    redraw while an operator runs, so ``invoke`` shows the wait message
+    first and the build starts on the next timer tick.
+    """
 
+    wait_text = "Generating tie strip, please wait..."
     _timer = None
 
+    def _build(self, context, progress):
+        """Build and return a list of build.BuildResult. Raise BuildError or BridgeError to stop."""
+        raise NotImplementedError
+
     def _run(self, context, progress=None):
-        """Build the strip and report errors, warnings and the summary line."""
+        """Build, then report errors, warnings and the summary line."""
         try:
-            result = build.generate(context, progress)
+            results = self._build(context, progress)
         except (build.BuildError, wb_bridge.BridgeError) as err:
             for line in str(err).splitlines():
                 self.report({"ERROR"}, line)
             _settings(context).last_report = str(err).splitlines()[0]
             return {"CANCELLED"}
-        for w in result.warnings:
-            self.report({"WARNING"}, w)
+        for result in results:
+            for w in result.warnings:
+                self.report({"WARNING"}, w)
         self.report({"INFO"}, _settings(context).last_report)
         return {"FINISHED"}
 
@@ -59,11 +66,7 @@ class TIESTRIP_OT_generate(bpy.types.Operator):
         return self._run(context)
 
     def invoke(self, context, event):
-        """Show the wait message and busy cursor first, then build on the next timer tick.
-
-        Blender doesn't redraw while an operator runs, so the build waits one
-        tick to let the panel show "please wait".
-        """
+        """Show the wait message and busy cursor first, then build on the next timer tick."""
         global _busy
         if _busy:
             return {"CANCELLED"}
@@ -71,7 +74,7 @@ class TIESTRIP_OT_generate(bpy.types.Operator):
         wm = context.window_manager
         context.window.cursor_modal_set("WAIT")
         if context.workspace:
-            context.workspace.status_text_set("Generating tie strip, please wait...")
+            context.workspace.status_text_set(self.wait_text)
         _redraw(context)
         self._timer = wm.event_timer_add(0.1, window=context.window)
         wm.modal_handler_add(self)
@@ -94,6 +97,116 @@ class TIESTRIP_OT_generate(bpy.types.Operator):
                 context.workspace.status_text_set(None)
             _busy = False
             _redraw(context)
+
+
+class TIESTRIP_OT_generate(_BuildOperator, bpy.types.Operator):
+    """Add a new tie strip at the 3D cursor from these settings, with a random seed unless Lock Seed is on. Strips made earlier are kept"""
+
+    bl_idname = "tie_strip.generate"
+    bl_label = "Generate Tie Strip"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def _build(self, context, progress):
+        """Add one new strip."""
+        return [build.generate(context, progress)]
+
+
+class TIESTRIP_OT_regenerate(_BuildOperator, bpy.types.Operator):
+    """Rebuild the selected tie strips in place with the panel's current settings. Each keeps its name, place, collection and materials; its rail is rebuilt if Include Rail is on. Uses a new random seed unless Lock Seed is on"""
+
+    bl_idname = "tie_strip.regenerate"
+    bl_label = "Regenerate Selected"
+    bl_options = {"REGISTER", "UNDO"}
+    wait_text = "Regenerating tie strips, please wait..."
+
+    @classmethod
+    def poll(cls, context):
+        """Needs a selected tie strip (or a rail on one) and Weathered Board."""
+        if not build.selected_strips(context, include_rail_parents=True):
+            cls.poll_message_set("Select one or more tie strips first")
+            return False
+        missing = wb_bridge.available()
+        if missing:
+            cls.poll_message_set(missing)
+            return False
+        return True
+
+    def _build(self, context, progress):
+        """Rebuild each selected strip in turn; stop at the first that fails.
+
+        Strips rebuilt before a failure stay rebuilt; the failing strip and
+        the rest are left as they were.
+        """
+        strips = build.selected_strips(context, include_rail_parents=True)
+        results = []
+        for i, old in enumerate(strips):
+            def step(done, total, i=i):
+                """Progress across all the strips, not just this one."""
+                if progress:
+                    progress(i * total + done, len(strips) * total)
+            try:
+                results.append(build.regenerate(context, old, step))
+            except (build.BuildError, wb_bridge.BridgeError) as err:
+                if results:
+                    raise build.BuildError(f"Rebuilt {len(results)} of {len(strips)} strips, "
+                                           f"then: {err}") from err
+                raise
+        if len(results) > 1:
+            _settings(context).last_report = (
+                f"Regenerated {len(results)} strips. Last: {_settings(context).last_report}")
+        return results
+
+
+class TIESTRIP_OT_load_settings(bpy.types.Operator):
+    """Set the panel to the settings the active tie strip was built with, including its seed, so you can adjust it and Regenerate Selected, or make more like it. Lock Seed and the Export choice are left as they are"""
+
+    bl_idname = "tie_strip.load_settings"
+    bl_label = "Load Settings From Selected"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @staticmethod
+    def _source(context):
+        """The strip to read: the active object's strip, else the first selected strip."""
+        strip = build.strip_of(context.view_layer.objects.active)
+        if strip is None:
+            strips = build.selected_strips(context, include_rail_parents=True)
+            strip = strips[0] if strips else None
+        return strip
+
+    @classmethod
+    def poll(cls, context):
+        """Needs a selected tie strip, or a rail on one."""
+        if cls._source(context) is None:
+            cls.poll_message_set("Select a tie strip first")
+            return False
+        return True
+
+    def execute(self, context):
+        """Copy the strip's stored settings into the panel and warn about missing presets."""
+        strip = self._source(context)
+        try:
+            values, meta = build.stored_settings(strip)
+        except build.BuildError as err:
+            self.report({"ERROR"}, str(err))
+            return {"CANCELLED"}
+        s = _settings(context)
+        s.apply_built_values(values, meta)
+        board = s.board_preset
+        if board and not wb_bridge.available() and board not in dict(wb_bridge.preset_names()):
+            self.report({"WARNING"}, f"Tie preset '{board}' isn't in Weathered Board any more; "
+                                     "pick a tie preset before generating.")
+        if s.rail_preset and rail_bridge.available():
+            builtin, saved = rail_bridge.preset_names()
+            if s.rail_preset not in builtin + saved:
+                self.report({"WARNING"}, f"Rail profile '{s.rail_preset}' isn't in Model Rail "
+                                         "Generator any more; its sizes were loaded as stored.")
+        if (s.plate_preset and not plates.is_builtin(s.plate_preset)
+                and s.plate_preset not in preset_store.saved_names(preset_store.PLATE)):
+            self.report({"WARNING"}, f"Plate preset '{s.plate_preset}' no longer exists; its "
+                                     "settings were loaded as stored.")
+        self.report({"INFO"}, f"Loaded the settings {strip.name} was built with "
+                              f"(seed {s.seed}).")
+        return {"FINISHED"}
 
 
 class TIESTRIP_OT_new_seed(bpy.types.Operator):
@@ -412,7 +525,8 @@ class TIESTRIP_OT_remove_strip_preset(bpy.types.Operator):
 
 
 classes = (
-    TIESTRIP_OT_generate, TIESTRIP_OT_new_seed, TIESTRIP_OT_export_stl,
+    TIESTRIP_OT_generate, TIESTRIP_OT_regenerate, TIESTRIP_OT_load_settings,
+    TIESTRIP_OT_new_seed, TIESTRIP_OT_export_stl,
     TIESTRIP_OT_set_board_preset, TIESTRIP_OT_set_rail_preset,
     TIESTRIP_OT_apply_plate_preset, TIESTRIP_OT_save_plate_preset, TIESTRIP_OT_remove_plate_preset,
     TIESTRIP_OT_apply_strip_preset, TIESTRIP_OT_save_strip_preset, TIESTRIP_OT_remove_strip_preset,

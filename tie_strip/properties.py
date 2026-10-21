@@ -538,6 +538,30 @@ class TIESTRIP_Settings(bpy.types.PropertyGroup):
             self.strip_modified = False
 
 
+    def apply_built_values(self, values: dict, meta: dict) -> None:
+        """Load the settings a strip was built with into the panel (Load Settings From Selected).
+
+        ``values`` and ``meta`` come from build.stored_settings. Every stored
+        setting is loaded, including the seed the strip used, except the
+        ones in ``LOAD_KEEP``, which are about how the panel is used rather
+        than about the strip. The strip preset name and the modified marks
+        are put back as they were when the strip was built; strips made
+        before 0.6.0 didn't record them, so they load with no strip preset
+        and an unmodified plate preset.
+        """
+        self.apply_strip_values({k: v for k, v in values.items() if k not in LOAD_KEEP},
+                                str(meta.get("strip_preset", "")))
+        with quiet():
+            self.strip_modified = bool(meta.get("strip_modified", False))
+            self.plate_modified = bool(meta.get("plate_modified", False))
+
+
+# Settings Load Settings From Selected leaves as they are: Lock Seed (whether
+# new strips repeat the seed) and the Export choice describe how the panel is
+# used, not the strip. strip_values() already leaves out the export choice.
+LOAD_KEEP = ("lock_seed", "export_what")
+
+
 def register():
     """Add ``scene.tie_strip``. TIESTRIP_Settings must already be registered."""
     bpy.types.Scene.tie_strip = bpy.props.PointerProperty(type=TIESTRIP_Settings)

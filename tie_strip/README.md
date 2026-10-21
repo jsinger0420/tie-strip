@@ -12,7 +12,7 @@ Design doc: https://claude.ai/code/artifact/546738a1-5a4c-43b3-ad10-bbe6330be406
 
 ## Install
 
-1. In Blender, open Edit > Preferences > Get Extensions, choose "Install from Disk" in the menu at the top right, and pick `tie_strip-0.5.1.zip`.
+1. In Blender, open Edit > Preferences > Get Extensions, choose "Install from Disk" in the menu at the top right, and pick `tie_strip-0.6.0.zip`.
 2. Open the 3D Viewport sidebar (N) and the **Tie Strip** tab.
 
 ## Use
@@ -26,6 +26,8 @@ Design doc: https://claude.ai/code/artifact/546738a1-5a4c-43b3-ad10-bbe6330be406
 7. **Generate Tie Strip**. The cursor shows busy and the panel says "please wait" until it's done. Like Weathered Board's Add button, each Generate adds a new strip (TieStrip, TieStrip.001, ...) at the 3D cursor in the active collection and selects it; strips made earlier are kept. Check the Summary box (it shows the printed size, including tie variation) and any warnings, then pick what to export (**Entire Track**, **Tie Strip Only**, the default, for printing, or **Rail Only**) and click **Export STL**, which exports the selected strips, all in one file or one file per strip (the choice is also in the file browser's side panel). Selecting a strip's rail counts as selecting the strip.
 
 The first build of a strip takes a while (about 2.5 s per HO tie on resin settings) because each tie is a separate weathered board. With Lock Seed on, later builds reuse the boards, so changing spacing, count, holes or plates takes a second or two; with it off, each Generate builds fresh ties. Larger scales take longer per tie.
+
+**Changing a strip you already made.** Click the strip (or its rail) and press **Load Settings From Selected**: the panel takes the settings that strip was built with, including its seed. Adjust what you like, then press **Regenerate Selected** to rebuild the selected strips in place with the panel's settings. Each keeps its name, place, collection and materials; its rail is rebuilt if Include Rail is on. Like Generate, Regenerate uses a new random seed unless Lock Seed is on, so to keep a strip's look while changing it: Load, tick Lock Seed, adjust, Regenerate. Loading leaves Lock Seed and the Export choice as they are. Strips made before 0.3.0 have no stored settings.
 
 Whole setups can be saved as strip presets from the menu at the top of the panel. Preset files live in the extension's user folder and can be copied to share.
 

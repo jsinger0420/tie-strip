@@ -137,6 +137,11 @@ class TIESTRIP_PT_main(_Panel, bpy.types.Panel):
         else:
             row.enabled = not missing
             row.operator("tie_strip.generate", icon="MESH_GRID")
+            # Work on strips already made: rebuild them with these settings,
+            # or bring a strip's settings back into the panel.
+            sub = col.column(align=True)
+            sub.operator("tie_strip.regenerate", icon="FILE_REFRESH")
+            sub.operator("tie_strip.load_settings", icon="IMPORT")
         row = col.row(align=True)
         row.prop(s, "export_what", expand=True)
         col.operator("tie_strip.export_stl", icon="EXPORT")
